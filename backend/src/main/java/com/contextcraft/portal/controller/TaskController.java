@@ -6,6 +6,7 @@ import com.contextcraft.portal.dto.request.UpdateTaskStatusRequest;
 import com.contextcraft.portal.dto.response.TaskResponse;
 import com.contextcraft.portal.entity.Task;
 import com.contextcraft.portal.security.PortalUserDetails;
+import com.contextcraft.portal.security.PermissionEvaluator;
 import com.contextcraft.portal.service.TaskService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
