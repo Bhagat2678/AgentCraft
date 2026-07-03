@@ -48,6 +48,12 @@ public class BusinessService {
         return businessRepository.save(b);
     }
 
+    public void setOwner(UUID businessId, UUID ownerUserId) {
+        Business b = getById(businessId);
+        b.setOwnerUserId(ownerUserId);
+        businessRepository.save(b);
+    }
+
     /** Soft-delete: sets deleted_at timestamp. */
     public void softDelete(UUID id) {
         Business b = getById(id);

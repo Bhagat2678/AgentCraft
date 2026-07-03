@@ -7,6 +7,8 @@ import com.contextcraft.portal.security.PermissionEvaluator;
 import com.contextcraft.portal.security.PortalUserDetails;
 import com.contextcraft.portal.service.BusinessService;
 import com.contextcraft.portal.service.RoleService;
+import com.contextcraft.portal.service.UserService;
+import com.contextcraft.portal.entity.Role;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -25,10 +27,12 @@ public class BusinessController {
 
     private final BusinessService businessService;
     private final RoleService roleService;
+    private final UserService userService;
 
-    public BusinessController(BusinessService businessService, RoleService roleService) {
+    public BusinessController(BusinessService businessService, RoleService roleService, UserService userService) {
         this.businessService = businessService;
         this.roleService = roleService;
+        this.userService = userService;
     }
 
     /**
@@ -48,6 +52,13 @@ public class BusinessController {
 
         // Seed the 5 default roles for this new business
         roleService.seedDefaultRoles(business.getId());
+
+        // Assign the authenticated user as the owner and CEO
+        if (principal != null) {
+            businessService.setOwner(business.getId(), principal.getUserId());
+            Role ceoRole = roleService.getCeoRole(business.getId());
+            userService.assignRole(principal.getUserId(), ceoRole.getId(), null, principal.getUserId());
+        }
 
         return ResponseEntity
                 .created(URI.create("/api/v1/businesses/" + business.getId()))

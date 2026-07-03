@@ -14,13 +14,18 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import java.util.List;
+
 /**
  * Spring Security configuration.
  *
  * Key decisions:
  * - STATELESS sessions (JWT-only — no HTTP sessions)
  * - CSRF disabled (REST API consumed by SPA / WhatsApp webhook)
- * - Webhook endpoint is public (Meta sends unsigned POSTs; we validate HMAC inside the handler)
+ * - Webhook endpoints are public (Meta/Telegram webhook endpoints)
  * - All other endpoints require a valid Bearer JWT
  * - Method-level security enabled so @PreAuthorize("@permissionEvaluator.hasPermission(...)") works
  */
@@ -38,11 +43,14 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 // Meta webhook verification (GET) and event reception (POST)
                 .requestMatchers("/api/v1/webhook").permitAll()
+                // Telegram webhook (POST)
+                .requestMatchers("/api/v1/telegram/webhook").permitAll()
                 // Auth endpoint — issues JWT after OTP/phone verification
                 .requestMatchers("/api/v1/auth/**").permitAll()
                 // Actuator health check
@@ -53,6 +61,19 @@ public class SecurityConfig {
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
+    }
+
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration configuration = new CorsConfiguration();
+        configuration.setAllowedOriginPatterns(List.of("*"));
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        configuration.setAllowedHeaders(List.of("Authorization", "Cache-Control", "Content-Type"));
+        configuration.setExposedHeaders(List.of("Authorization"));
+        configuration.setAllowCredentials(true);
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration);
+        return source;
     }
 
     @Bean

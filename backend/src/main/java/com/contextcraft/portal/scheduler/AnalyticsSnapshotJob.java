@@ -36,9 +36,15 @@ public class AnalyticsSnapshotJob implements Job {
 
     private static final Logger log = LoggerFactory.getLogger(AnalyticsSnapshotJob.class);
 
-    private final BusinessRepository businessRepository;
-    private final TaskRepository taskRepository;
-    private final AnalyticsSnapshotRepository snapshotRepository;
+    @org.springframework.beans.factory.annotation.Autowired
+    private BusinessRepository businessRepository;
+    @org.springframework.beans.factory.annotation.Autowired
+    private TaskRepository taskRepository;
+    @org.springframework.beans.factory.annotation.Autowired
+    private AnalyticsSnapshotRepository snapshotRepository;
+
+    public AnalyticsSnapshotJob() {
+    }
 
     public AnalyticsSnapshotJob(BusinessRepository businessRepository,
                                 TaskRepository taskRepository,

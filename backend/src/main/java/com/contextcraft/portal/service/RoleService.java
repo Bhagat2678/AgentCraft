@@ -18,6 +18,7 @@ public class RoleService {
     private final RoleRepository roleRepository;
     private final RolePermissionRepository rolePermissionRepository;
     private final BusinessRepository businessRepository;
+    private final DepartmentRepository departmentRepository;
 
     // Default permissions per role level (mirrors the README permissions matrix)
     private static final java.util.Map<Integer, List<String>> DEFAULT_PERMISSIONS = java.util.Map.of(
@@ -34,10 +35,12 @@ public class RoleService {
 
     public RoleService(RoleRepository roleRepository,
                        RolePermissionRepository rolePermissionRepository,
-                       BusinessRepository businessRepository) {
+                       BusinessRepository businessRepository,
+                       DepartmentRepository departmentRepository) {
         this.roleRepository = roleRepository;
         this.rolePermissionRepository = rolePermissionRepository;
         this.businessRepository = businessRepository;
+        this.departmentRepository = departmentRepository;
     }
 
     /**
@@ -81,8 +84,7 @@ public class RoleService {
         role.setLevel(level);
 
         if (departmentId != null) {
-            Department dept = new Department();
-            dept.setId(departmentId);
+            Department dept = departmentRepository.getReferenceById(departmentId);
             role.setDepartment(dept);
         }
 
@@ -120,5 +122,13 @@ public class RoleService {
                     rp.setGranted(false);
                     rolePermissionRepository.save(rp);
                 });
+    }
+
+    @Transactional(readOnly = true)
+    public Role getCeoRole(UUID businessId) {
+        return roleRepository.findByBusinessIdAndIsDefault(businessId, true).stream()
+                .filter(r -> r.getLevel() == 1)
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException("CEO role not found"));
     }
 }

@@ -31,6 +31,8 @@ Thumbs.db
 
 # Docker / local secrets
 .env
+env
+env.local
 docker/db_data/
 docker/redis_data/
 pgdata/

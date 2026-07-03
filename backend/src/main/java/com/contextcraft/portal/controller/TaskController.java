@@ -27,9 +27,11 @@ import java.util.stream.Collectors;
 public class TaskController {
 
     private final TaskService taskService;
+    private final PermissionEvaluator permissionEvaluator;
 
-    public TaskController(TaskService taskService) {
+    public TaskController(TaskService taskService, PermissionEvaluator permissionEvaluator) {
         this.taskService = taskService;
+        this.permissionEvaluator = permissionEvaluator;
     }
 
     /**
@@ -43,9 +45,16 @@ public class TaskController {
             @PathVariable UUID businessId,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String assigneeId,
-            @RequestParam(required = false) String priority) {
+            @RequestParam(required = false) String priority,
+            @AuthenticationPrincipal PortalUserDetails principal) {
 
         UUID assigneeUuid = assigneeId != null ? UUID.fromString(assigneeId) : null;
+
+        // Force to caller's own tasks if they only have TASK_VIEW_OWN
+        if (!permissionEvaluator.hasPermission(principal.getUserId(), businessId, "TASK_VIEW_ALL")) {
+            assigneeUuid = principal.getUserId();
+        }
+
         List<TaskResponse> tasks = taskService.listByBusiness(businessId, status, assigneeUuid, priority)
                 .stream().map(TaskResponse::from).collect(Collectors.toList());
         return ResponseEntity.ok(tasks);

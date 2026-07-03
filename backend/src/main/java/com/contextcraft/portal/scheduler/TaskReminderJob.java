@@ -31,10 +31,17 @@ public class TaskReminderJob implements Job {
 
     private static final Logger log = LoggerFactory.getLogger(TaskReminderJob.class);
 
-    private final TaskRepository taskRepository;
-    private final BusinessRepository businessRepository;
-    private final UserPhoneRepository phoneRepository;
-    private final WhatsAppChatAdapter chatAdapter;
+    @org.springframework.beans.factory.annotation.Autowired
+    private TaskRepository taskRepository;
+    @org.springframework.beans.factory.annotation.Autowired
+    private BusinessRepository businessRepository;
+    @org.springframework.beans.factory.annotation.Autowired
+    private UserPhoneRepository phoneRepository;
+    @org.springframework.beans.factory.annotation.Autowired
+    private WhatsAppChatAdapter chatAdapter;
+
+    public TaskReminderJob() {
+    }
 
     public TaskReminderJob(TaskRepository taskRepository,
                            BusinessRepository businessRepository,
@@ -102,9 +109,8 @@ public class TaskReminderJob implements Job {
     }
 
     private String getPrimaryPhone(java.util.UUID userId) {
-        return phoneRepository.findAll().stream()
-                .filter(p -> p.getUser().getId().equals(userId) && p.isPrimary())
+        return phoneRepository.findByUserIdAndIsPrimaryTrue(userId)
                 .map(UserPhone::getPhoneNumber)
-                .findFirst().orElse(null);
+                .orElse(null);
     }
 }
