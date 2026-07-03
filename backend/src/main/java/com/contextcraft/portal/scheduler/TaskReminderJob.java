@@ -4,10 +4,13 @@ import com.contextcraft.portal.entity.Business;
 import com.contextcraft.portal.entity.Task;
 import com.contextcraft.portal.entity.TaskAssignment;
 import com.contextcraft.portal.entity.UserPhone;
+import com.contextcraft.portal.entity.TelegramUser;
 import com.contextcraft.portal.repository.BusinessRepository;
 import com.contextcraft.portal.repository.TaskRepository;
 import com.contextcraft.portal.repository.UserPhoneRepository;
+import com.contextcraft.portal.repository.TelegramUserRepository;
 import com.contextcraft.portal.whatsapp.WhatsAppChatAdapter;
+import com.contextcraft.portal.telegram.TelegramChatAdapter;
 import org.quartz.Job;
 import org.quartz.JobExecutionContext;
 import org.quartz.JobExecutionException;
@@ -17,12 +20,14 @@ import org.springframework.stereotype.Component;
 
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 
 /**
  * Quartz job that runs daily to:
  *  1. Find tasks due within the next 24 hours that are not yet completed
  *  2. Find overdue tasks (due date passed, not approved/closed)
- *  3. Send WhatsApp reminder messages to assignees and notify managers
+ *  3. Send WhatsApp or Telegram reminder messages to assignees and notify managers
  *
  * Scheduled: every day at 08:00 AM (configured in QuartzConfig)
  */
@@ -34,16 +39,22 @@ public class TaskReminderJob implements Job {
     private final TaskRepository taskRepository;
     private final BusinessRepository businessRepository;
     private final UserPhoneRepository phoneRepository;
-    private final WhatsAppChatAdapter chatAdapter;
+    private final TelegramUserRepository telegramUserRepository;
+    private final WhatsAppChatAdapter whatsAppAdapter;
+    private final TelegramChatAdapter telegramAdapter;
 
     public TaskReminderJob(TaskRepository taskRepository,
                            BusinessRepository businessRepository,
                            UserPhoneRepository phoneRepository,
-                           WhatsAppChatAdapter chatAdapter) {
+                           TelegramUserRepository telegramUserRepository,
+                           WhatsAppChatAdapter whatsAppAdapter,
+                           TelegramChatAdapter telegramAdapter) {
         this.taskRepository = taskRepository;
         this.businessRepository = businessRepository;
         this.phoneRepository = phoneRepository;
-        this.chatAdapter = chatAdapter;
+        this.telegramUserRepository = telegramUserRepository;
+        this.whatsAppAdapter = whatsAppAdapter;
+        this.telegramAdapter = telegramAdapter;
     }
 
     @Override
@@ -74,25 +85,37 @@ public class TaskReminderJob implements Job {
                 for (TaskAssignment assignment : task.getAssignments()) {
                     if (assignment.getCompletedAt() != null) continue; // already done
 
-                    String assigneePhone = getPrimaryPhone(assignment.getAssignee().getId());
-                    if (assigneePhone == null) continue;
+                    UUID assigneeId = assignment.getAssignee().getId();
+                    String assigneePhone = getPrimaryPhone(assigneeId);
+                    Long telegramChatId = getTelegramChatId(assigneeId);
 
+                    if (assigneePhone == null && telegramChatId == null) {
+                        continue; // No communication channel found for assignee
+                    }
+
+                    String msg;
                     if (isOverdue) {
-                        chatAdapter.sendText(assigneePhone,
-                                "⚠️ *Overdue Task Reminder*\n\n" +
-                                "📋 *" + task.getTitle() + "*\n" +
-                                "• Was due: " + task.getDueDate().toLocalDate() + "\n" +
-                                "• Status: " + task.getStatus() + "\n\n" +
-                                "Please update your manager or mark it done ASAP.");
-                        log.info("Sent overdue reminder for task {} to {}", task.getId(), assigneePhone);
+                        msg = "⚠️ *Overdue Task Reminder*\n\n" +
+                              "📋 *" + task.getTitle() + "*\n" +
+                              "• Was due: " + task.getDueDate().toLocalDate() + "\n" +
+                              "• Status: " + task.getStatus() + "\n\n" +
+                              "Please update your manager or mark it done ASAP.";
                     } else {
-                        chatAdapter.sendText(assigneePhone,
-                                "⏰ *Task Due in 24 Hours*\n\n" +
-                                "📋 *" + task.getTitle() + "*\n" +
-                                "• Due: " + task.getDueDate().toLocalDate() + "\n" +
-                                "• Priority: " + task.getPriority() + "\n\n" +
-                                "Reply *DONE* when complete or contact your manager.");
-                        log.info("Sent due-soon reminder for task {} to {}", task.getId(), assigneePhone);
+                        msg = "⏰ *Task Due in 24 Hours*\n\n" +
+                              "📋 *" + task.getTitle() + "*\n" +
+                              "• Due: " + task.getDueDate().toLocalDate() + "\n" +
+                              "• Priority: " + task.getPriority() + "\n\n" +
+                              "Reply *DONE* when complete or contact your manager.";
+                    }
+
+                    if (telegramChatId != null) {
+                        telegramAdapter.sendText(telegramChatId, msg);
+                        log.info("Sent {} reminder for task {} to Telegram chat ID {}",
+                                isOverdue ? "overdue" : "due-soon", task.getId(), telegramChatId);
+                    } else {
+                        whatsAppAdapter.sendText(assigneePhone, msg);
+                        log.info("Sent {} reminder for task {} to WhatsApp {}",
+                                isOverdue ? "overdue" : "due-soon", task.getId(), assigneePhone);
                     }
                 }
             }
@@ -101,10 +124,17 @@ public class TaskReminderJob implements Job {
         log.info("✅ TaskReminderJob completed.");
     }
 
-    private String getPrimaryPhone(java.util.UUID userId) {
+    private String getPrimaryPhone(UUID userId) {
         return phoneRepository.findAll().stream()
                 .filter(p -> p.getUser().getId().equals(userId) && p.isPrimary())
                 .map(UserPhone::getPhoneNumber)
+                .findFirst().orElse(null);
+    }
+
+    private Long getTelegramChatId(UUID userId) {
+        return telegramUserRepository.findAll().stream()
+                .filter(t -> t.getUser().getId().equals(userId))
+                .map(TelegramUser::getChatId)
                 .findFirst().orElse(null);
     }
 }

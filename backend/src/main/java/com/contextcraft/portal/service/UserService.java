@@ -9,6 +9,7 @@ import java.security.SecureRandom;
 import java.time.OffsetDateTime;
 import java.util.Base64;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -20,17 +21,20 @@ public class UserService {
 
     private final UserRepository userRepository;
     private final UserPhoneRepository userPhoneRepository;
+    private final TelegramUserRepository telegramUserRepository;
     private final BusinessRepository businessRepository;
     private final RoleRepository roleRepository;
     private final UserRoleRepository userRoleRepository;
 
     public UserService(UserRepository userRepository,
                        UserPhoneRepository userPhoneRepository,
+                       TelegramUserRepository telegramUserRepository,
                        BusinessRepository businessRepository,
                        RoleRepository roleRepository,
                        UserRoleRepository userRoleRepository) {
         this.userRepository = userRepository;
         this.userPhoneRepository = userPhoneRepository;
+        this.telegramUserRepository = telegramUserRepository;
         this.businessRepository = businessRepository;
         this.roleRepository = roleRepository;
         this.userRoleRepository = userRoleRepository;
@@ -47,6 +51,38 @@ public class UserService {
         return userPhoneRepository.findByPhoneNumber(phoneNumber)
                 .map(UserPhone::getUser)
                 .orElseThrow(() -> new RuntimeException("No user with phone: " + phoneNumber));
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<User> findByTelegramChatId(Long chatId) {
+        return telegramUserRepository.findByChatId(chatId)
+                .map(TelegramUser::getUser);
+    }
+
+    /**
+     * Creates a new ACTIVE user for a Telegram-based portal creation.
+     * Links the user to the given business and Telegram chatId/username.
+     *
+     * @return the created User
+     */
+    public User createTelegramUser(UUID businessId, Long chatId, String username) {
+        Business business = businessRepository.findById(businessId)
+                .orElseThrow(() -> new RuntimeException("Business not found: " + businessId));
+
+        User user = new User();
+        user.setBusiness(business);
+        user.setDisplayName(username != null ? username : "User-" + chatId);
+        user.setStatus("ACTIVE");
+        user = userRepository.save(user);
+
+        TelegramUser tgUser = new TelegramUser();
+        tgUser.setUser(user);
+        tgUser.setChatId(chatId);
+        tgUser.setUsername(username);
+        tgUser.setVerifiedAt(OffsetDateTime.now());
+        telegramUserRepository.save(tgUser);
+
+        return user;
     }
 
     /**
@@ -123,6 +159,39 @@ public class UserService {
         phone.setInviteToken(null);
         phone.setInviteExpires(null);
         userPhoneRepository.save(phone);
+
+        return user;
+    }
+
+    /**
+     * Accepts an invite by token, activates the user, and registers their Telegram chat ID.
+     */
+    public User acceptInviteTelegram(String token, Long chatId, String username) {
+        UserPhone phone = userPhoneRepository.findByInviteToken(token)
+                .orElseThrow(() -> new RuntimeException("Invalid or expired token"));
+
+        if (phone.getInviteExpires() != null && phone.getInviteExpires().isBefore(OffsetDateTime.now())) {
+            throw new RuntimeException("Invite token has expired");
+        }
+
+        User user = phone.getUser();
+        user.setStatus("ACTIVE");
+        userRepository.save(user);
+
+        phone.setVerifiedAt(OffsetDateTime.now());
+        phone.setInviteToken(null);
+        phone.setInviteExpires(null);
+        userPhoneRepository.save(phone);
+
+        // Link Telegram user if not already linked
+        if (!telegramUserRepository.existsByChatId(chatId)) {
+            TelegramUser tgUser = new TelegramUser();
+            tgUser.setUser(user);
+            tgUser.setChatId(chatId);
+            tgUser.setUsername(username);
+            tgUser.setVerifiedAt(OffsetDateTime.now());
+            telegramUserRepository.save(tgUser);
+        }
 
         return user;
     }

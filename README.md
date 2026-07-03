@@ -1,6 +1,6 @@
-# WhatsApp Business Portal — Complete Implementation Plan
+# BizPortal — Complete Dual-Channel (WhatsApp & Telegram) Implementation Plan
 
-> **Stack:** Java 17 + Spring Boot 3 · PostgreSQL 15 · Redis 7 · WhatsApp Business Cloud API (Meta) · React 18 (popup dashboard)
+> **Stack:** Java 17 + Spring Boot 3 · PostgreSQL 15 · Redis 7 · WhatsApp Business Cloud API & Telegram Bot API · React 18 (Mini App & Dashboard)
 > **Build:** Maven · Flyway migrations · Docker Compose / Kubernetes · GitHub Actions CI/CD
 
 ---
@@ -2454,12 +2454,14 @@ groups:
 ## 16. Developer README & Quick-Start
 
 ```markdown
-# BizPortal — Quick-Start Guide
+# BizPortal — Quick-Start Guide (Dual-Channel WhatsApp & Telegram)
 
 ## Prerequisites
 - Java 17+, Maven 3.9+
+- Node.js 18+ (for Frontend Vite App)
 - Docker & Docker Compose
-- ngrok (for local WhatsApp webhook testing)
+- ngrok (for local webhook testing)
+- Telegram Bot (created via @BotFather)
 - Meta Developer account with WhatsApp Business API access
 
 ## Local Setup (5 minutes)
@@ -2468,72 +2470,66 @@ groups:
 git clone https://github.com/your-org/bizportal
 cd bizportal
 cp .env.example .env
-# Edit .env: add WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, JWT_SECRET
+# Edit .env: add WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, JWT_SECRET
 
 ### 2. Start infrastructure
-docker-compose up -d postgres redis minio
+docker-compose up -d postgres redis
 
-### 3. Build and run
+### 3. Build and run Backend
+cd backend
 ./mvnw spring-boot:run
 
-### 4. Expose webhook for local testing
+### 4. Build and run Frontend
+cd ../Frontend
+npm install
+npm run dev
+
+### 5. Expose webhook for local testing
 ngrok http 8080
-# Copy the https URL, e.g. https://abc123.ngrok.io
+# Copy the https URL, e.g. https://abc123.ngrok-free.app
 
-### 5. Configure Meta webhook
+### 6. Configure Webhooks
+#### WhatsApp
 - Go to developers.facebook.com → Your App → WhatsApp → Configuration
-- Webhook URL: https://abc123.ngrok.io/api/v1/webhook
+- Webhook URL: https://abc123.ngrok-free.app/api/v1/webhook
 - Verify token: (value of WEBHOOK_VERIFY_TOKEN in .env)
-- Subscribe to: messages, message_deliveries, message_reads
 
-### 6. Seed demo data
-./mvnw flyway:migrate  # runs V1 + V2 automatically on startup
+#### Telegram
+Register the webhook with Telegram by sending a POST request:
+```bash
+curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
+     -d "url=https://abc123.ngrok-free.app/api/v1/telegram/webhook" \
+     -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+```
 
-### 7. Test the flow
-- Send a WhatsApp message from +15550000001 (CEO demo number)
-- Follow the portal setup conversation
-- Add +15550000002 and +15550000003 as employees
+### 7. Seed demo data
+Flyway runs migration files `V1` through `V5` automatically on database connection on startup.
+
+### 8. Test the flow
+- Send a message (e.g. `/start`) to your Telegram bot.
+- Follow the interactive inline keyboard prompts to set up a new portal or accept an invite.
+- Link task attachments by uploading documents/photos directly to the bot.
 
 ## Running Tests
+```bash
+cd backend
 ./mvnw test
-
-## Access Dashboard
-http://localhost:8080/dashboard?businessId=aaaaaaaa-0000-0000-0000-000000000001&token=<jwt>
+```
 
 ## Environment Variables Reference
 | Variable | Description |
 |----------|-------------|
 | WHATSAPP_TOKEN | Meta Cloud API permanent token |
 | WHATSAPP_PHONE_NUMBER_ID | Phone number ID from Meta dashboard |
-| WEBHOOK_VERIFY_TOKEN | Any random string for webhook verification |
-| WHATSAPP_APP_SECRET | App Secret from Meta App settings (for HMAC) |
+| WEBHOOK_VERIFY_TOKEN | Any random string for WhatsApp webhook verification |
+| TELEGRAM_BOT_TOKEN | Telegram bot token issued by @BotFather |
+| TELEGRAM_WEBHOOK_SECRET | Random secret verified in header `X-Telegram-Bot-Api-Secret-Token` |
 | DB_USER / DB_PASS | PostgreSQL credentials |
 | REDIS_HOST | Redis hostname |
 | JWT_SECRET | Min 32-char random string for JWT signing |
-| S3_BUCKET | S3/MinIO bucket name for attachments |
-| S3_ENDPOINT | Override for local MinIO (leave blank for AWS) |
-
-## Production Deployment
-kubectl apply -f k8s/
-kubectl create secret generic bizportal-secrets --from-env-file=.env
-
-## Switching WhatsApp Provider
-# To use Twilio instead of Meta Cloud API:
-# 1. Set channel.provider=TWILIO in application.yml
-# 2. Add TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN to .env
-# 3. The adapter is auto-selected via @ConditionalOnProperty
-
-## Next Steps for Dev Team
-Priority order for MVP:
-1. Complete FSM handlers for all setup states (SetupFlowHandler)
-2. Implement NotificationService retry logic with backoff
-3. Register all template messages in Meta Business Manager
-4. Complete TaskFlowHandler for full task lifecycle
-5. Add integration tests for end-to-end WhatsApp flows
-6. Security review: HMAC validation, rate limiting, PII masking in logs
 ```
 
 ---
 
 *Generated by BizPortal Architecture Generator — v1.0*
-*Last updated: 2025*
+*Last updated: 2026*

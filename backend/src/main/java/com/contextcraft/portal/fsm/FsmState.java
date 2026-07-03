@@ -14,6 +14,7 @@ public enum FsmState {
 
     // ── New / Unregistered user ────────────────────────────────────────────
     NEW,                    // First contact — show welcome, ask to create portal or join
+    ACCEPT_INVITE_TOKEN,    // Awaiting: invite token entry
 
     // ── Portal creation wizard ─────────────────────────────────────────────
     SETUP_BNAME,            // Awaiting: business name

@@ -10,6 +10,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import com.contextcraft.portal.service.RateLimitingService;
+
 /**
  * Handles Telegram Bot API webhook events.
  *
@@ -28,13 +30,19 @@ public class TelegramWebhookController {
     private final TelegramProperties props;
     private final ConversationFsm conversationFsm;
     private final ObjectMapper objectMapper;
+    private final TelegramChatAdapter telegramChatAdapter;
+    private final RateLimitingService rateLimitingService;
 
     public TelegramWebhookController(TelegramProperties props,
                                       ConversationFsm conversationFsm,
-                                      ObjectMapper objectMapper) {
+                                      ObjectMapper objectMapper,
+                                      TelegramChatAdapter telegramChatAdapter,
+                                      RateLimitingService rateLimitingService) {
         this.props = props;
         this.conversationFsm = conversationFsm;
         this.objectMapper = objectMapper;
+        this.telegramChatAdapter = telegramChatAdapter;
+        this.rateLimitingService = rateLimitingService;
     }
 
     /**
@@ -83,11 +91,17 @@ public class TelegramWebhookController {
     private void processMessage(JsonNode message) {
         try {
             Long chatId = message.get("chat").get("id").asLong();
-            String text = "";
-
-            if (message.has("text")) {
-                text = message.get("text").asText();
+            
+            // Check rate limit: max 20 requests per 10 seconds per chat
+            String rateKey = "rate:telegram:chat:" + chatId;
+            if (!rateLimitingService.isAllowed(rateKey, 20, 10)) {
+                log.warn("Rate limit exceeded for Telegram chatId={}", chatId);
+                telegramChatAdapter.sendText(chatId, "⚠️ *Rate limit exceeded.* Please slow down.");
+                return;
             }
+
+            String fsmKey = TelegramChatAdapter.toFsmKey(chatId);
+            String messageId = message.has("message_id") ? message.get("message_id").asText() : "unknown";
 
             // Extract username if available
             String username = null;
@@ -95,13 +109,42 @@ public class TelegramWebhookController {
                 username = message.get("from").get("username").asText();
             }
 
-            String messageId = message.has("message_id")
-                    ? message.get("message_id").asText()
-                    : "unknown";
+            // 1. Check for documents
+            if (message.has("document")) {
+                JsonNode doc = message.get("document");
+                String fileId = doc.get("file_id").asText();
+                String fileName = doc.has("file_name") ? doc.get("file_name").asText() : "document";
+                String mimeType = doc.has("mime_type") ? doc.get("mime_type").asText() : "application/octet-stream";
+                Long fileSize = doc.has("file_size") ? doc.get("file_size").asLong() : 0L;
 
-            String fsmKey = TelegramChatAdapter.toFsmKey(chatId);
+                log.info("Incoming Telegram document chatId={} user={} fileName={} size={}", chatId, username, fileName, fileSize);
+                conversationFsm.processMedia(fsmKey, fileId, fileName, mimeType, fileSize, messageId);
+                return;
+            }
 
-            log.info("Incoming Telegram message chatId={} user={} text={}",
+            // 2. Check for photos
+            if (message.has("photo")) {
+                JsonNode photoArray = message.get("photo");
+                if (photoArray.isArray() && photoArray.size() > 0) {
+                    JsonNode lastPhoto = photoArray.get(photoArray.size() - 1);
+                    String fileId = lastPhoto.get("file_id").asText();
+                    String fileName = "photo_" + (fileId.length() > 8 ? fileId.substring(0, 8) : fileId) + ".jpg";
+                    String mimeType = "image/jpeg";
+                    Long fileSize = lastPhoto.has("file_size") ? lastPhoto.get("file_size").asLong() : 0L;
+
+                    log.info("Incoming Telegram photo chatId={} user={} fileId={} size={}", chatId, username, fileId, fileSize);
+                    conversationFsm.processMedia(fsmKey, fileId, fileName, mimeType, fileSize, messageId);
+                    return;
+                }
+            }
+
+            // 3. Fallback to standard text message processing
+            String text = "";
+            if (message.has("text")) {
+                text = message.get("text").asText();
+            }
+
+            log.info("Incoming Telegram text message chatId={} user={} text={}",
                     chatId, username,
                     text.length() > 50 ? text.substring(0, 50) + "…" : text);
 
@@ -110,7 +153,7 @@ public class TelegramWebhookController {
                 text = text.length() > 7 ? text.substring(7).trim() : "";
             }
 
-            conversationFsm.process(fsmKey, text, messageId);
+            conversationFsm.process(fsmKey, text, messageId, username);
 
         } catch (Exception e) {
             log.error("Error processing Telegram message: {}", e.getMessage(), e);
@@ -120,14 +163,25 @@ public class TelegramWebhookController {
     private void processCallbackQuery(JsonNode callbackQuery) {
         try {
             Long chatId = callbackQuery.get("message").get("chat").get("id").asLong();
-            String data = callbackQuery.has("data") ? callbackQuery.get("data").asText() : "";
             String callbackId = callbackQuery.get("id").asText();
 
+            // Check rate limit: max 20 requests per 10 seconds per chat
+            String rateKey = "rate:telegram:chat:" + chatId;
+            if (!rateLimitingService.isAllowed(rateKey, 20, 10)) {
+                log.warn("Rate limit exceeded for Telegram callback chatId={}", chatId);
+                telegramChatAdapter.answerCallbackQuery(callbackId, "Please slow down.");
+                return;
+            }
+
+            String data = callbackQuery.has("data") ? callbackQuery.get("data").asText() : "";
             String fsmKey = TelegramChatAdapter.toFsmKey(chatId);
 
             log.info("Incoming Telegram callback chatId={} data={}", chatId, data);
 
             conversationFsm.process(fsmKey, data, callbackId);
+
+            // Answer callback query to dismiss the loading animation in Telegram
+            telegramChatAdapter.answerCallbackQuery(callbackId, null);
 
         } catch (Exception e) {
             log.error("Error processing Telegram callback query: {}", e.getMessage(), e);

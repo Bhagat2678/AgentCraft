@@ -23,7 +23,8 @@ import {
   Settings,
   ShieldCheck,
   UserRound,
-  UsersRound
+  UsersRound,
+  Plus
 } from 'lucide-react';
 import './styles.css';
 
@@ -50,7 +51,8 @@ const iconMap = {
   Settings,
   ShieldCheck,
   UserRound,
-  UsersRound
+  UsersRound,
+  Plus
 };
 
 const Icon = ({ name, size = 18 }) => {
@@ -73,41 +75,9 @@ const setupSteps = [
 const navItems = [
   { id: 'overview', label: 'Overview', icon: 'Home', roles },
   { id: 'analytics', label: 'Analytics', icon: 'BarChart3', roles: ['CEO', 'Manager', 'Lead'] },
-  { id: 'conversations', label: 'Conversations', icon: 'MessageSquare', roles },
-  { id: 'knowledge', label: 'Knowledge Base', icon: 'BookOpen', roles },
   { id: 'tasks', label: 'Tasks', icon: 'ClipboardCheck', roles },
   { id: 'employees', label: 'Employees', icon: 'UsersRound', roles: ['CEO', 'Manager', 'Lead'] },
-  { id: 'managers', label: 'Managers', icon: 'ShieldCheck', roles: ['CEO'] },
-  { id: 'notifications', label: 'Notifications', icon: 'Bell', roles },
-  { id: 'settings', label: 'Settings', icon: 'Settings', roles: ['CEO', 'Manager'] },
-  { id: 'profile', label: 'Profile', icon: 'UserRound', roles },
-  { id: 'telegram', label: 'Telegram', icon: 'Bot', roles: ['CEO', 'Manager'] }
-];
-
-const validationStates = [
-  'Validate Telegram username',
-  'Validate Bot Token',
-  'Validate duplicate business',
-  'Validate role permissions',
-  'Validate webhook',
-  'Validate session'
-];
-
-const errorStates = [
-  'Invalid Bot Token',
-  'Webhook Failure',
-  'Duplicate Business',
-  'Portal Not Found',
-  'Permission Denied',
-  'Session Expired',
-  'Network Failure'
-];
-
-const loadingMessages = [
-  'Please wait while we verify your Telegram Bot.',
-  'Please wait while we configure your webhook.',
-  'Please wait while we create your secure portal.',
-  'Please wait while we transfer you to your portal.'
+  { id: 'profile', label: 'Profile', icon: 'UserRound', roles }
 ];
 
 function App() {
@@ -116,17 +86,249 @@ function App() {
   const [screen, setScreen] = React.useState('overview');
   const [role, setRole] = React.useState('CEO');
   const [toast, setToast] = React.useState('Telegram Mini App ready.');
+  
+  // API State
+  const [jwt, setJwt] = React.useState(sessionStorage.getItem('jwt_token') || '');
+  const [user, setUser] = React.useState(null);
+  const [business, setBusiness] = React.useState(null);
+  const [tasks, setTasks] = React.useState([]);
+  const [employees, setEmployees] = React.useState([]);
+  const [availableRoles, setAvailableRoles] = React.useState([]);
+  const [analytics, setAnalytics] = React.useState(null);
+  
+  // Modals / Inputs
+  const [phoneNumberInput, setPhoneNumberInput] = React.useState('');
+  const [inviteTokenInput, setInviteTokenInput] = React.useState('');
+  const [loading, setLoading] = React.useState(false);
 
-  const startCreate = () => {
-    setPhase('setup');
-    setSetupStep(0);
-    setToast('Choose a portal workflow.');
+  // Auto-init Telegram WebApp
+  React.useEffect(() => {
+    if (window.Telegram && window.Telegram.WebApp) {
+      const webapp = window.Telegram.WebApp;
+      webapp.ready();
+      webapp.expand();
+      
+      const initData = webapp.initData;
+      if (initData) {
+        setLoading(true);
+        setToast('Connecting to bot secure server...');
+        fetch('/api/v1/auth/telegram', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData })
+        })
+        .then(res => {
+          if (!res.ok) throw new Error('Auto-auth failed. Please use phone number login.');
+          return res.json();
+        })
+        .then(data => {
+          const token = data.accessToken;
+          setJwt(token);
+          sessionStorage.setItem('jwt_token', token);
+          setToast('Authenticated via Telegram.');
+        })
+        .catch(err => {
+          console.warn(err.message);
+          setToast(err.message);
+        })
+        .finally(() => setLoading(false));
+      }
+    }
+  }, []);
+
+  // Fetch data on token update
+  React.useEffect(() => {
+    if (!jwt) return;
+    setLoading(true);
+    fetch('/api/v1/auth/me', {
+      headers: { 'Authorization': `Bearer ${jwt}` }
+    })
+    .then(res => {
+      if (!res.ok) throw new Error('Session expired');
+      return res.json();
+    })
+    .then(me => {
+      return fetch(`/api/v1/businesses/${me.businessId}/users/${me.userId}`, {
+        headers: { 'Authorization': `Bearer ${jwt}` }
+      })
+      .then(res => res.json())
+      .then(profile => {
+        const userRole = profile.roleNames && profile.roleNames.length > 0 ? profile.roleNames[0] : 'Employee';
+        setUser({
+          id: profile.id,
+          displayName: profile.displayName,
+          role: userRole,
+          businessId: profile.businessId,
+          primaryPhone: profile.primaryPhone,
+          email: profile.email
+        });
+        setRole(userRole);
+        setPhase('dashboard');
+        loadDashboardData(me.businessId, jwt);
+      });
+    })
+    .catch(err => {
+      setToast('Login failed: ' + err.message);
+      setJwt('');
+      sessionStorage.removeItem('jwt_token');
+    })
+    .finally(() => setLoading(false));
+  }, [jwt]);
+
+  const loadDashboardData = (businessId, token) => {
+    const headers = { 'Authorization': `Bearer ${token}` };
+    
+    // Get Business Details
+    fetch(`/api/v1/businesses/${businessId}`, { headers })
+      .then(res => res.json())
+      .then(data => setBusiness(data))
+      .catch(console.error);
+
+    // Get Tasks
+    fetch(`/api/v1/businesses/${businessId}/tasks`, { headers })
+      .then(res => res.json())
+      .then(data => setTasks(data))
+      .catch(console.error);
+
+    // Get Users / Employees
+    fetch(`/api/v1/businesses/${businessId}/users`, { headers })
+      .then(res => res.json())
+      .then(data => setEmployees(data))
+      .catch(console.error);
+
+    // Get Roles
+    fetch(`/api/v1/businesses/${businessId}/roles`, { headers })
+      .then(res => res.json())
+      .then(data => setAvailableRoles(data))
+      .catch(console.error);
+
+    // Get Analytics
+    fetch(`/api/v1/businesses/${businessId}/analytics`, { headers })
+      .then(res => res.json())
+      .then(data => setAnalytics(data))
+      .catch(console.error);
   };
 
-  const accessPortal = () => {
-    setPhase('dashboard');
-    setScreen('overview');
-    setToast('Loading dashboard.');
+  const handleManualLogin = (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setToast('Logging in...');
+
+    const body = {};
+    if (inviteTokenInput.trim()) {
+      body.token = inviteTokenInput.trim();
+    } else if (phoneNumberInput.trim()) {
+      body.phoneNumber = phoneNumberInput.trim();
+    } else {
+      setToast('Enter phone number or invite token');
+      setLoading(false);
+      return;
+    }
+
+    fetch('/api/v1/auth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    .then(res => {
+      if (!res.ok) throw new Error('Invalid credentials');
+      return res.json();
+    })
+    .then(data => {
+      setJwt(data.accessToken);
+      sessionStorage.setItem('jwt_token', data.accessToken);
+    })
+    .catch(err => setToast(err.message))
+    .finally(() => setLoading(false));
+  };
+
+  const handleTaskAction = (taskId, action, data = {}) => {
+    if (!jwt || !user) return;
+    setLoading(true);
+    
+    let url = `/api/v1/businesses/${user.businessId}/tasks/${taskId}/status`;
+    let method = 'PATCH';
+    let body = { status: action };
+
+    if (action === 'APPROVE' || action === 'REJECT') {
+      url = `/api/v1/businesses/${user.businessId}/tasks/${taskId}/approve`;
+      method = 'POST';
+      body = {
+        approved: action === 'APPROVE',
+        reason: data.reason || '',
+        assignmentId: data.assignmentId
+      };
+    }
+
+    fetch(url, {
+      method,
+      headers: {
+        'Authorization': `Bearer ${jwt}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    })
+    .then(res => {
+      if (!res.ok) throw new Error('Action failed');
+      setToast(`Task marked as ${action}`);
+      loadDashboardData(user.businessId, jwt);
+    })
+    .catch(err => setToast(err.message))
+    .finally(() => setLoading(false));
+  };
+
+  const handleCreateTask = (taskData) => {
+    if (!jwt || !user) return;
+    setLoading(true);
+    
+    fetch(`/api/v1/businesses/${user.businessId}/tasks`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${jwt}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(taskData)
+    })
+    .then(res => {
+      if (!res.ok) throw new Error('Failed to assign task');
+      setToast('Task assigned successfully.');
+      loadDashboardData(user.businessId, jwt);
+    })
+    .catch(err => setToast(err.message))
+    .finally(() => setLoading(false));
+  };
+
+  const handleInviteUser = (inviteData) => {
+    if (!jwt || !user) return;
+    setLoading(true);
+
+    fetch(`/api/v1/businesses/${user.businessId}/users`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${jwt}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(inviteData)
+    })
+    .then(res => {
+      if (!res.ok) throw new Error('Failed to send invite');
+      setToast('Invite sent successfully!');
+      loadDashboardData(user.businessId, jwt);
+    })
+    .catch(err => setToast(err.message))
+    .finally(() => setLoading(false));
+  };
+
+  const logout = () => {
+    setJwt('');
+    setUser(null);
+    setBusiness(null);
+    setTasks([]);
+    setEmployees([]);
+    setAvailableRoles([]);
+    setAnalytics(null);
+    sessionStorage.removeItem('jwt_token');
+    setPhase('start');
   };
 
   return (
@@ -135,24 +337,66 @@ function App() {
         <TelegramHeader
           phase={phase}
           screen={screen}
-          onBack={() => (phase === 'dashboard' ? setPhase('start') : setSetupStep(Math.max(0, setupStep - 1)))}
+          loading={loading}
+          onBack={() => (phase === 'dashboard' ? logout() : setSetupStep(Math.max(0, setupStep - 1)))}
         />
 
-        {phase === 'start' && <StartScreen onCreate={startCreate} onAccess={accessPortal} />}
-        {phase === 'setup' && (
-          <SetupFlow
-            step={setupStep}
-            setStep={setSetupStep}
-            enterPortal={accessPortal}
-          />
+        {phase === 'start' && (
+          <section className="screen start-screen">
+            <div className="bot-message">
+              <Icon name="Send" />
+              <div>
+                <p>Welcome to BizPortal on Telegram.</p>
+                <p>Access your workspace using your phone number or invite token.</p>
+              </div>
+            </div>
+
+            <section className="panel compact">
+              <h1>Sign In</h1>
+              <form onSubmit={handleManualLogin} className="action-stack" style={{ marginTop: '16px' }}>
+                <label>
+                  <span>Phone Number</span>
+                  <input
+                    type="tel"
+                    placeholder="+15550001234"
+                    value={phoneNumberInput}
+                    onChange={(e) => setPhoneNumberInput(e.target.value)}
+                  />
+                </label>
+                <div style={{ textAlign: 'center', margin: '8px 0', color: 'var(--muted)', fontSize: '12px' }}>— OR —</div>
+                <label>
+                  <span>Invite Token</span>
+                  <input
+                    type="text"
+                    placeholder="Enter registration/invite token"
+                    value={inviteTokenInput}
+                    onChange={(e) => setInviteTokenInput(e.target.value)}
+                  />
+                </label>
+                <button type="submit" className="primary" style={{ marginTop: '12px' }} disabled={loading}>
+                  {loading ? 'Signing In...' : 'Verify & Access Portal'}
+                </button>
+              </form>
+            </section>
+          </section>
         )}
+
         {phase === 'dashboard' && (
           <Dashboard
+            user={user}
             role={role}
             setRole={setRole}
             screen={screen}
             setScreen={setScreen}
-            logout={() => setPhase('start')}
+            logout={logout}
+            tasks={tasks}
+            employees={employees}
+            business={business}
+            availableRoles={availableRoles}
+            analytics={analytics}
+            onTaskAction={handleTaskAction}
+            onCreateTask={handleCreateTask}
+            onInviteUser={handleInviteUser}
           />
         )}
       </section>
@@ -167,7 +411,7 @@ function App() {
   );
 }
 
-function TelegramHeader({ phase, screen, onBack }) {
+function TelegramHeader({ phase, screen, loading, onBack }) {
   const title = phase === 'dashboard' ? navItems.find((item) => item.id === screen)?.label : 'BizPortal';
 
   return (
@@ -180,522 +424,322 @@ function TelegramHeader({ phase, screen, onBack }) {
         <span>Telegram Mini App</span>
       </div>
       <button className="icon-button" aria-label="Bot status">
-        <Icon name="Bot" />
+        {loading ? <Icon name="Loader2" size={18} className="spin" /> : <Icon name="Bot" />}
       </button>
     </header>
   );
 }
 
-function StartScreen({ onCreate, onAccess }) {
-  return (
-    <section className="screen start-screen">
-      <div className="bot-message">
-        <Icon name="Send" />
-        <div>
-          <p>Welcome to BizPortal on Telegram.</p>
-          <p>Use /start to begin.</p>
-        </div>
-      </div>
-
-      <section className="panel">
-        <p className="eyebrow">/start</p>
-        <h1>Create or access your portal</h1>
-        <p className="muted">This screen is the Telegram entry point, not a separate website page.</p>
-        <div className="action-stack">
-          <button className="primary" onClick={onCreate}>
-            Create New Portal <Icon name="ChevronRight" />
-          </button>
-          <button onClick={onAccess}>
-            Access Existing Portal <Icon name="Plug" />
-          </button>
-        </div>
-      </section>
-
-      <section className="panel compact">
-        <h2>Public states inside Mini App</h2>
-        <Segmented items={['Landing', 'Login', 'Register']} />
-        <StateBadges items={['Validate session', 'Portal Not Found', 'Session Expired']} />
-      </section>
-    </section>
-  );
-}
-
-function SetupFlow({ step, setStep, enterPortal }) {
-  const [selectedWorkflow, setSelectedWorkflow] = React.useState(null);
-  const [botToken, setBotToken] = React.useState('');
-  const [verificationStatus, setVerificationStatus] = React.useState('idle');
-  const isLast = step === setupSteps.length - 1;
-
-  React.useEffect(() => {
-    if (step !== 5 || verificationStatus !== 'loading') return undefined;
-
-    const timer = window.setTimeout(() => {
-      setVerificationStatus(botToken.trim() ? 'success' : 'error');
-    }, 1100);
-
-    return () => window.clearTimeout(timer);
-  }, [botToken, step, verificationStatus]);
-
-  const next = () => {
-    if (step === 0 && !selectedWorkflow) return;
-    if (step === 0 && selectedWorkflow === 'access') {
-      setStep(3);
-      return;
-    }
-    if (step === 4) {
-      setVerificationStatus('loading');
-      setStep(5);
-      return;
-    }
-    if (step === 5 && verificationStatus !== 'success') return;
-    isLast ? enterPortal() : setStep(step + 1);
-  };
-
-  return (
-    <form className="screen setup-screen" onSubmit={(e) => { e.preventDefault(); next(); }}>
-      <Stepper steps={setupSteps} active={step} />
-
-      {step === 0 && (
-        <FormPanel
-          eyebrow="Portal"
-          title="Create or Access Portal"
-          description="Would you like to Create a New Portal or Access Existing Portal?"
-          fields={[]}
-        >
-          <div className="choice-grid">
-            <WorkflowChoice
-              icon="BriefcaseBusiness"
-              title="Create New Portal"
-              text="Start CEO setup for identity, business information, workflow, bot token and webhook."
-              selected={selectedWorkflow === 'create'}
-              onClick={() => setSelectedWorkflow('create')}
-            />
-            <WorkflowChoice
-              icon="Plug"
-              title="Access Existing Portal"
-              text="Validate portal, Telegram account, role permission and session."
-              selected={selectedWorkflow === 'access'}
-              onClick={() => setSelectedWorkflow('access')}
-            />
-          </div>
-        </FormPanel>
-      )}
-
-      {step === 1 && (
-        <FormPanel
-          eyebrow="Identity"
-          title="Identity"
-          description="Please enter your full name."
-          fields={[
-            { label: 'Full name', placeholder: 'User.fullName' },
-            { label: 'Role', type: 'select', options: roles }
-          ]}
-        />
-      )}
-
-      {step === 2 && (
-        <FormPanel
-          eyebrow="Business"
-          title="Business Information"
-          description="Fields map to Business: company name, type, description and workflow."
-          fields={[
-            { label: 'Company name', placeholder: 'Business.name' },
-            { label: 'Business type', type: 'select', options: ['Retail', 'Service', 'Manufacturing', 'Other'] },
-            { label: 'Company description', placeholder: 'Business.description', textarea: true },
-            { label: 'Workflow', placeholder: 'Business.workflow or templateId', textarea: true }
-          ]}
-        >
-          <StateBadges items={['Validate duplicate business', 'Syncing company information.']} />
-        </FormPanel>
-      )}
-
-      {step === 3 && (
-        <FormPanel
-          eyebrow="Telegram"
-          title="Telegram Account"
-          description="Please confirm your Telegram username."
-          fields={[
-            { label: 'Telegram username', placeholder: '@username' },
-            { label: 'Telegram chat id', placeholder: 'Resolved from initData', disabled: true }
-          ]}
-        >
-          <StateBadges items={['Validate Telegram username', 'Validate session']} />
-        </FormPanel>
-      )}
-
-      {step === 4 && (
-        <FormPanel
-          eyebrow="Bot"
-          title="Bot Configuration"
-          description="Have you created your bot using @BotFather? Paste Bot Token."
-          fields={[
-            { label: 'Bot created using @BotFather?', type: 'select', options: ['Yes', 'No'] },
-            { label: 'Telegram Bot Token', placeholder: 'Bot.token', value: botToken, onChange: setBotToken },
-            { label: 'Bot username', placeholder: 'Bot.username' },
-            { label: 'Webhook secret', placeholder: 'Generated server-side', disabled: true }
-          ]}
-        >
-          <StateBadges items={['Validate Bot Token', 'Validate webhook']} />
-        </FormPanel>
-      )}
-
-      {step === 5 && (
-        <VerificationPanel
-          status={verificationStatus}
-          onRetry={() => setVerificationStatus('loading')}
-        />
-      )}
-
-      {step === 6 && (
-        <section className="panel">
-          <p className="eyebrow">Portal Creation</p>
-          <h1>Create secure portal</h1>
-          <ProgressList />
-        </section>
-      )}
-
-      <footer className="step-actions">
-        <button type="button" disabled={step === 0} onClick={() => setStep(step - 1)}>
-          <Icon name="ChevronLeft" /> Back
-        </button>
-        <button type="submit" className="primary" disabled={(step === 0 && !selectedWorkflow) || (step === 5 && verificationStatus !== 'success')}>
-          {isLast ? 'Open Dashboard' : 'Continue'} <Icon name="ChevronRight" />
-        </button>
-      </footer>
-    </form>
-  );
-}
-
-function Dashboard({ role, setRole, screen, setScreen, logout }) {
+function Dashboard({
+  user,
+  role,
+  setRole,
+  screen,
+  setScreen,
+  logout,
+  tasks,
+  employees,
+  business,
+  availableRoles,
+  analytics,
+  onTaskAction,
+  onCreateTask,
+  onInviteUser
+}) {
   const visibleNav = navItems.filter((item) => item.roles.includes(role));
 
   return (
     <section className="dashboard">
       <div className="role-row">
-        <select value={role} onChange={(event) => setRole(event.target.value)}>
-          {roles.map((item) => <option key={item}>{item}</option>)}
-        </select>
+        <div>
+          <span style={{ fontSize: '13px', color: 'var(--muted)', marginRight: '8px' }}>Active Role:</span>
+          <strong>{role}</strong>
+        </div>
         <button onClick={logout}><Icon name="LogOut" /> Logout</button>
       </div>
 
       <div className="content-shell">
-        {screen === 'overview' && <OverviewScreen />}
-        {screen === 'analytics' && <AnalyticsScreen />}
-        {screen === 'conversations' && <ConversationsScreen />}
-        {screen === 'knowledge' && <KnowledgeScreen />}
-        {screen === 'tasks' && <TasksScreen role={role} />}
-        {screen === 'employees' && <DirectoryScreen title="Employees" entity="Employee" />}
-        {screen === 'managers' && <DirectoryScreen title="Managers" entity="Role" />}
-        {screen === 'notifications' && <NotificationsScreen />}
-        {screen === 'settings' && <SettingsScreen />}
-        {screen === 'profile' && <ProfileScreen role={role} />}
-        {screen === 'telegram' && <TelegramScreen />}
+        {screen === 'overview' && <OverviewScreen tasks={tasks} business={business} employees={employees} />}
+        {screen === 'analytics' && <AnalyticsScreen analytics={analytics} />}
+        {screen === 'tasks' && <TasksScreen role={role} tasks={tasks} employees={employees} onTaskAction={onTaskAction} onCreateTask={onCreateTask} />}
+        {screen === 'employees' && <DirectoryScreen title="Employees" employees={employees} availableRoles={availableRoles} onInviteUser={onInviteUser} />}
+        {screen === 'profile' && <ProfileScreen user={user} />}
       </div>
 
       <nav className="bottom-nav">
-        {visibleNav.slice(0, 5).map((item) => (
+        {visibleNav.map((item) => (
           <button className={screen === item.id ? 'active' : ''} key={item.id} onClick={() => setScreen(item.id)}>
             <Icon name={item.icon} size={17} />
             <span>{item.label}</span>
           </button>
         ))}
       </nav>
-
-      <div className="more-nav">
-        {visibleNav.slice(5).map((item) => (
-          <button className={screen === item.id ? 'active' : ''} key={item.id} onClick={() => setScreen(item.id)}>
-            <Icon name={item.icon} size={16} />
-            {item.label}
-          </button>
-        ))}
-      </div>
     </section>
   );
 }
 
-function OverviewScreen() {
+function OverviewScreen({ tasks, business, employees }) {
+  const openTasks = tasks.filter(t => t.status === 'ASSIGNED' || t.status === 'REJECTED' || t.status === 'IN_PROGRESS').length;
+  const pendingApprovals = tasks.filter(t => t.status === 'SUBMITTED').length;
+
   return (
     <>
       <div className="metric-grid">
-        {[
-          ['Open tasks', '0', 'Task API pending'],
-          ['Pending approvals', '0', 'Approval API pending'],
-          ['Conversations', '0', 'Telegram sync pending'],
-          ['Webhook', 'Not verified', 'Bot setup required']
-        ].map((item) => <Metric item={item} key={item[0]} />)}
+        <Metric title="Open Tasks" value={openTasks} desc="Awaiting completion" />
+        <Metric title="Pending Approvals" value={pendingApprovals} desc="Awaiting manager review" />
+        <Metric title="Total Team Members" value={employees.length} desc="Active staff" />
+        <Metric title="Company Name" value={business ? business.name : 'BizPortal'} desc={business ? business.industry : 'Loading...'} />
       </div>
-      <Section title="Dashboard resources" action="Refresh">
-        <ResourceList items={['Business', 'User', 'Telegram Account', 'Bot', 'Task', 'Department', 'Employee', 'Role']} />
-      </Section>
-      <Section title="Loading and retry states" action="Inspect">
-        <StateBadges items={[...validationStates, ...errorStates]} />
+      <Section title="Business Workspaces">
+        <div className="resource-grid" style={{ marginTop: '14px' }}>
+          <article>
+            <Icon name="BriefcaseBusiness" size={16} />
+            <span>Tasks Workspace</span>
+          </article>
+          <article>
+            <Icon name="UsersRound" size={16} />
+            <span>Directory Workspace</span>
+          </article>
+          <article>
+            <Icon name="Bot" size={16} />
+            <span>Telegram Bot Link</span>
+          </article>
+          <article>
+            <Icon name="ShieldCheck" size={16} />
+            <span>Active Security</span>
+          </article>
+        </div>
       </Section>
     </>
   );
 }
 
-function AnalyticsScreen() {
+function AnalyticsScreen({ analytics }) {
+  const openCount = analytics ? analytics.openCount || 0 : 0;
+  const completedCount = analytics ? analytics.completedCount || 0 : 0;
+  const totalCount = openCount + completedCount;
+
   return (
     <>
-      <Section title="Analytics" action="Filter">
+      <Section title="Task Performance Chart">
         <ChartPlaceholder />
       </Section>
-      <EmptyState title="No analytics records loaded" text="Charts are waiting for dashboard and conversation APIs." />
+      <div className="metric-grid" style={{ marginTop: '14px' }}>
+        <Metric title="Completed Tasks" value={completedCount} desc="Completed successfully" />
+        <Metric title="Open Tasks" value={openCount} desc="Still in progress" />
+        <Metric title="Total Tracked Tasks" value={totalCount} desc="All time" />
+      </div>
     </>
   );
 }
 
-function ConversationsScreen() {
+function TasksScreen({ role, tasks, employees, onTaskAction, onCreateTask }) {
+  const [showForm, setShowForm] = React.useState(false);
+  const [title, setTitle] = React.useState('');
+  const [description, setDescription] = React.useState('');
+  const [dueDate, setDueDate] = React.useState('');
+  const [priority, setPriority] = React.useState('MEDIUM');
+  const [assigneeId, setAssigneeId] = React.useState('');
+
+  const submitTask = (e) => {
+    e.preventDefault();
+    if (!title) return;
+    onCreateTask({
+      title,
+      description,
+      dueDate: dueDate ? dueDate + "T23:59:59Z" : null,
+      priority,
+      assigneeId: assigneeId || null
+    });
+    setShowForm(false);
+    setTitle('');
+    setDescription('');
+    setDueDate('');
+    setPriority('MEDIUM');
+    setAssigneeId('');
+  };
+
   return (
-    <Section title="Conversations" action="New message">
-      <Toolbar />
-      <DataTable columns={['Conversation ID', 'Participant', 'Status', 'Last message', 'Updated']} entity="Conversation" />
-      <Composer placeholder="Enter message" />
+    <Section
+      title="Tasks"
+      action={role !== 'Employee' ? (showForm ? 'Cancel' : 'Create Task') : ''}
+      onActionClick={() => setShowForm(!showForm)}
+    >
+      {showForm && (
+        <form onSubmit={submitTask} className="panel" style={{ marginTop: '14px', display: 'grid', gap: '10px' }}>
+          <label>
+            <span>Task Title *</span>
+            <input type="text" required value={title} onChange={e => setTitle(e.target.value)} />
+          </label>
+          <label>
+            <span>Description</span>
+            <textarea value={description} onChange={e => setDescription(e.target.value)} />
+          </label>
+          <label>
+            <span>Due Date</span>
+            <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} />
+          </label>
+          <label>
+            <span>Priority</span>
+            <select value={priority} onChange={e => setPriority(e.target.value)}>
+              <option value="LOW">Low</option>
+              <option value="MEDIUM">Medium</option>
+              <option value="HIGH">High</option>
+              <option value="CRITICAL">Critical</option>
+            </select>
+          </label>
+          <label>
+            <span>Assignee</span>
+            <select value={assigneeId} onChange={e => setAssigneeId(e.target.value)}>
+              <option value="">Unassigned</option>
+              {employees.map(emp => (
+                <option key={emp.id} value={emp.id}>{emp.displayName} ({emp.primaryPhone || 'No Phone'})</option>
+              ))}
+            </select>
+          </label>
+          <button type="submit" className="primary" style={{ marginTop: '10px' }}>Assign Now</button>
+        </form>
+      )}
+
+      <div style={{ marginTop: '14px' }}>
+        <DataTable
+          columns={['Task Title', 'Priority', 'Due Date', 'Status', 'Actions']}
+          data={tasks}
+          renderRow={(task) => (
+            <tr key={task.id}>
+              <td>
+                <strong>{task.title}</strong>
+                <p className="muted" style={{ margin: '3px 0 0', fontSize: '12px' }}>{task.description || 'No description'}</p>
+              </td>
+              <td><span className={`badge ${task.priority.toLowerCase()}`}>{task.priority}</span></td>
+              <td>{task.dueDate ? task.dueDate.substring(0, 10) : '—'}</td>
+              <td><span className={`badge ${task.status.toLowerCase()}`}>{task.status}</span></td>
+              <td>
+                {role === 'Employee' && (task.status === 'ASSIGNED' || task.status === 'REJECTED') && (
+                  <button onClick={() => onTaskAction(task.id, 'SUBMITTED')} style={{ borderColor: 'var(--success)', color: 'var(--success)' }}>
+                    Complete
+                  </button>
+                )}
+                {role !== 'Employee' && task.status === 'SUBMITTED' && (
+                  <div style={{ display: 'flex', gap: '5px' }}>
+                    <button onClick={() => onTaskAction(task.id, 'APPROVE')} style={{ background: 'var(--success)', color: '#fff', border: 0 }}>
+                      Approve
+                    </button>
+                    <button onClick={() => onTaskAction(task.id, 'REJECT')} style={{ background: 'var(--error)', color: '#fff', border: 0 }}>
+                      Reject
+                    </button>
+                  </div>
+                )}
+              </td>
+            </tr>
+          )}
+        />
+      </div>
     </Section>
   );
 }
 
-function KnowledgeScreen() {
+function DirectoryScreen({ title, employees, availableRoles, onInviteUser }) {
+  const [showInvite, setShowInvite] = React.useState(false);
+  const [phone, setPhone] = React.useState('');
+  const [roleId, setRoleId] = React.useState('');
+
+  const submitInvite = (e) => {
+    e.preventDefault();
+    if (!phone || !roleId) return;
+    onInviteUser({
+      phoneNumber: phone,
+      roleId
+    });
+    setShowInvite(false);
+    setPhone('');
+    setRoleId('');
+  };
+
   return (
-    <Section title="Knowledge Base" action="Create article">
-      <Toolbar />
-      <DataTable columns={['Article ID', 'Title', 'Visibility', 'Owner role', 'Status']} entity="KnowledgeBaseArticle" />
+    <Section
+      title={title}
+      action={showInvite ? 'Cancel' : 'Invite User'}
+      onActionClick={() => {
+        setShowInvite(!showInvite);
+        if (availableRoles.length > 0 && !roleId) {
+          setRoleId(availableRoles[0].id);
+        }
+      }}
+    >
+      {showInvite && (
+        <form onSubmit={submitInvite} className="panel" style={{ marginTop: '14px', display: 'grid', gap: '10px' }}>
+          <label>
+            <span>Phone Number *</span>
+            <input type="tel" required placeholder="+15550001234" value={phone} onChange={e => setPhone(e.target.value)} />
+          </label>
+          <label>
+            <span>Role *</span>
+            <select value={roleId} onChange={e => setRoleId(e.target.value)}>
+              {availableRoles.map(r => (
+                <option key={r.id} value={r.id}>{r.name}</option>
+              ))}
+            </select>
+          </label>
+          <button type="submit" className="primary" style={{ marginTop: '10px' }}>Send Invitation Link</button>
+        </form>
+      )}
+
+      <div style={{ marginTop: '14px' }}>
+        <DataTable
+          columns={['Full Name', 'Primary Phone', 'Email Address', 'Roles', 'Status']}
+          data={employees}
+          renderRow={(emp) => (
+            <tr key={emp.id}>
+              <td><strong>{emp.displayName}</strong></td>
+              <td>{emp.primaryPhone || '—'}</td>
+              <td>{emp.email || '—'}</td>
+              <td>
+                {(emp.roleNames || []).map(r => (
+                  <span key={r} className="badge" style={{ marginRight: '4px' }}>{r}</span>
+                ))}
+              </td>
+              <td><span className={`badge ${emp.status.toLowerCase()}`}>{emp.status}</span></td>
+            </tr>
+          )}
+        />
+      </div>
     </Section>
   );
 }
 
-function TasksScreen({ role }) {
+function ProfileScreen({ user }) {
   return (
-    <Section title="Tasks" action={role === 'Employee' ? 'Upload proof' : 'Assign task'}>
-      <Toolbar />
-      <DataTable columns={['Task ID', 'Title', 'Owner', 'Priority', 'Deadline', 'Status']} entity="Task" />
-      <StateBadges items={['Enter task title', 'Choose priority', 'Enter deadline', 'Upload proof', 'Approve or Reject']} />
-    </Section>
-  );
-}
-
-function DirectoryScreen({ title, entity }) {
-  return (
-    <Section title={title} action="Invite">
-      <Toolbar />
-      <DataTable columns={['User ID', 'Full name', 'Telegram username', 'Role', 'Department', 'Status']} entity={entity} />
-    </Section>
-  );
-}
-
-function NotificationsScreen() {
-  return (
-    <Section title="Notifications" action="Mark read">
-      <DataTable columns={['Notification ID', 'Type', 'Message', 'Status', 'Created']} entity="Notification" />
-    </Section>
-  );
-}
-
-function SettingsScreen() {
-  return (
-    <>
-      <FormPanel
-        eyebrow="Settings"
-        title="Business Settings"
-        description="Editable only after session, role and permission checks pass."
-        fields={[
-          { label: 'Business name', placeholder: 'Business.name' },
-          { label: 'Business type', type: 'select', options: ['Retail', 'Service', 'Manufacturing', 'Other'] },
-          { label: 'Description', placeholder: 'Business.description', textarea: true }
-        ]}
-      />
-      <Section title="Role Permissions" action="Audit logs">
-        <DataTable columns={['Role', 'Permission', 'Scope', 'Status']} entity="RolePermission" />
-      </Section>
-    </>
-  );
-}
-
-function ProfileScreen({ role }) {
-  return (
-    <Section title="Profile" action="Edit">
-      <div className="profile-card">
+    <Section title="Profile">
+      <div className="profile-card" style={{ marginTop: '14px' }}>
         <div className="avatar"><Icon name="UserRound" size={26} /></div>
         <div>
-          <h2>User profile</h2>
-          <p>User.fullName, TelegramAccount.username and role are loaded from authenticated Telegram session.</p>
-          <StateBadges items={[role, 'Validate initData', 'Validate session']} />
+          <h2>{user ? user.displayName : 'Loading...'}</h2>
+          <p>{user ? user.email : 'No email address registered'}</p>
+          <div className="badge-row">
+            <span className="badge primary">{user ? user.role : 'Employee'}</span>
+            <span className="badge">{user ? user.primaryPhone : 'No Phone'}</span>
+            <span className="badge success">Telegram Verified</span>
+          </div>
         </div>
       </div>
     </Section>
   );
 }
 
-function TelegramScreen() {
-  return (
-    <>
-      <FormPanel
-        eyebrow="Telegram"
-        title="Bot Configuration"
-        description="Bot token, webhook and Mini App status map directly to Bot and Telegram Account resources."
-        fields={[
-          { label: 'Bot username', placeholder: 'Bot.username' },
-          { label: 'Bot token', placeholder: 'Bot.token' },
-          { label: 'Webhook status', placeholder: 'Bot.webhookStatus', disabled: true },
-          { label: 'Mini App status', placeholder: 'Bot.miniAppStatus', disabled: true }
-        ]}
-      />
-      <Section title="Integration Status" action="Retry">
-        <ProgressList />
-      </Section>
-    </>
-  );
-}
-
-function Stepper({ steps, active }) {
-  return (
-    <div className="stepper">
-      {steps.map((step, index) => (
-        <span className={index === active ? 'active' : index < active ? 'done' : ''} key={step}>
-          {index < active ? <Icon name="Check" size={13} /> : index + 1}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function FormPanel({ eyebrow, title, description, fields, children }) {
-  return (
-    <section className="panel">
-      <p className="eyebrow">{eyebrow}</p>
-      <h1>{title}</h1>
-      <p className="muted">{description}</p>
-      {fields.length > 0 && (
-        <div className="form-grid">
-          {fields.map((field) => <Field field={field} key={field.label} />)}
-        </div>
-      )}
-      {children}
-    </section>
-  );
-}
-
-function Field({ field }) {
-  return (
-    <label className={field.textarea ? 'wide' : ''}>
-      <span>{field.label}</span>
-      {field.type === 'select' ? (
-        <select disabled={field.disabled} required>
-          {field.options.map((option) => <option key={option}>{option}</option>)}
-        </select>
-      ) : field.textarea ? (
-        <textarea placeholder={field.placeholder} disabled={field.disabled} required />
-      ) : (
-        <input
-          placeholder={field.placeholder}
-          disabled={field.disabled}
-          value={field.value ?? undefined}
-          onChange={field.onChange ? (event) => field.onChange(event.target.value) : undefined}
-          required
-        />
-      )}
-    </label>
-  );
-}
-
-function WorkflowChoice({ icon, title, text, selected, onClick }) {
-  return (
-    <button className={`choice-card ${selected ? 'selected' : ''}`} onClick={onClick} type="button">
-      <Icon name={icon} size={22} />
-      <strong>{title}</strong>
-      <span>{text}</span>
-    </button>
-  );
-}
-
-function AsyncState({ icon, title, text, action }) {
-  return (
-    <article className="state-card">
-      <Icon name={icon} size={22} />
-      <strong>{title}</strong>
-      <span>{text}</span>
-      {action && <button>{action}</button>}
-    </article>
-  );
-}
-
-function VerificationPanel({ status, onRetry }) {
-  const content = {
-    loading: {
-      icon: 'Loader2',
-      title: 'Verifying Telegram Bot',
-      text: 'Please wait while we verify your Telegram Bot.'
-    },
-    success: {
-      icon: 'CheckCircle2',
-      title: 'Bot verified',
-      text: 'Webhook configured successfully.'
-    },
-    error: {
-      icon: 'AlertCircle',
-      title: 'Invalid Bot Token',
-      text: 'The bot token could not be verified. Paste a valid token and retry.'
-    },
-    idle: {
-      icon: 'Bot',
-      title: 'Ready to verify',
-      text: 'Verification will start when this step opens.'
-    }
-  }[status];
-
-  return (
-    <section className="panel verification-panel">
-      <p className="eyebrow">Bot Verification</p>
-      <article className={`verification-card ${status}`}>
-        <Icon name={content.icon} size={28} />
-        <div>
-          <h1>{content.title}</h1>
-          <p className="muted">{content.text}</p>
-        </div>
-        {status === 'error' && <button type="button" onClick={onRetry}>Retry</button>}
-      </article>
-    </section>
-  );
-}
-
-function ProgressList() {
-  return (
-    <div className="progress-list">
-      {loadingMessages.map((message, index) => (
-        <div key={message}>
-          <span>{index === 0 ? <Icon name="Loader2" size={14} /> : index + 1}</span>
-          <p>{message}</p>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function Section({ title, action, children }) {
+function Section({ title, action, onActionClick, children }) {
   return (
     <section className="panel section-panel">
       <header className="section-header">
         <h1>{title}</h1>
-        <button>{action}</button>
+        {action && <button type="button" onClick={onActionClick}>{action}</button>}
       </header>
       {children}
     </section>
   );
 }
 
-function Toolbar() {
-  return (
-    <div className="toolbar">
-      <label>
-        <Icon name="Search" size={15} />
-        <input placeholder="Search API records" />
-      </label>
-      <button><Icon name="Filter" /> Filter</button>
-    </div>
-  );
-}
-
-function DataTable({ columns, entity }) {
+function DataTable({ columns, data, renderRow }) {
   return (
     <div className="table-wrap">
       <table>
@@ -703,93 +747,30 @@ function DataTable({ columns, entity }) {
           <tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr>
         </thead>
         <tbody>
-          <tr>
-            <td colSpan={columns.length}>
-              <EmptyInline entity={entity} />
-            </td>
-          </tr>
+          {data && data.length > 0 ? (
+            data.map(renderRow)
+          ) : (
+            <tr>
+              <td colSpan={columns.length}>
+                <div className="empty-inline">
+                  <span>No records found.</span>
+                </div>
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
-      <footer className="table-footer">
-        <span>Pagination ready: page, limit, total</span>
-        <div>
-          <button disabled>Previous</button>
-          <button disabled>Next</button>
-        </div>
-      </footer>
     </div>
   );
 }
 
-function EmptyInline({ entity }) {
-  return (
-    <div className="empty-inline">
-      <Icon name="Loader2" size={18} />
-      <span>No {entity} records loaded. Waiting for API response.</span>
-    </div>
-  );
-}
-
-function EmptyState({ title, text }) {
-  return (
-    <section className="panel empty-state">
-      <Icon name="BookOpen" size={28} />
-      <h1>{title}</h1>
-      <p className="muted">{text}</p>
-    </section>
-  );
-}
-
-function Metric({ item }) {
+function Metric({ title, value, desc }) {
   return (
     <article className="metric-card">
-      <span>{item[0]}</span>
-      <strong>{item[1]}</strong>
-      <p>{item[2]}</p>
+      <span>{title}</span>
+      <strong>{value}</strong>
+      <p>{desc}</p>
     </article>
-  );
-}
-
-function ResourceList({ items }) {
-  return (
-    <div className="resource-grid">
-      {items.map((item) => (
-        <article key={item}>
-          <Icon name="BriefcaseBusiness" size={16} />
-          <span>{item}</span>
-        </article>
-      ))}
-    </div>
-  );
-}
-
-function StateBadges({ items }) {
-  return (
-    <div className="badge-row">
-      {items.map((item) => <Badge key={item} label={item} />)}
-    </div>
-  );
-}
-
-function Badge({ label }) {
-  const tone = label.toLowerCase().replaceAll(' ', '-');
-  return <span className={`badge ${tone}`}>{label}</span>;
-}
-
-function Segmented({ items }) {
-  return (
-    <div className="segmented">
-      {items.map((item, index) => <button className={index === 0 ? 'active' : ''} key={item}>{item}</button>)}
-    </div>
-  );
-}
-
-function Composer({ placeholder }) {
-  return (
-    <div className="composer">
-      <input placeholder={placeholder} />
-      <button className="primary"><Icon name="Send" /> Send</button>
-    </div>
   );
 }
 

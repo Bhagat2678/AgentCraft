@@ -139,6 +139,86 @@ public class TelegramChatAdapter {
         // Telegram does not support this operation
     }
 
+    /**
+     * Answers a callback query from an inline keyboard.
+     *
+     * @param callbackQueryId  The ID of the callback query
+     * @param text             Optional text to display to the user
+     */
+    public boolean answerCallbackQuery(String callbackQueryId, String text) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("callback_query_id", callbackQueryId);
+        if (text != null) {
+            body.put("text", text);
+        }
+        return sendWithRetry("answerCallbackQuery", body, "answerCallbackQuery", callbackQueryId);
+    }
+
+    /**
+     * Validates Telegram Mini App initData using HMAC-SHA256.
+     * Returns true if valid.
+     */
+    public boolean validateInitData(String initData) {
+        if (initData == null || initData.isBlank()) return false;
+        try {
+            // Parse query parameters
+            Map<String, String> params = new LinkedHashMap<>();
+            String[] pairs = initData.split("&");
+            String hash = null;
+            for (String pair : pairs) {
+                int idx = pair.indexOf("=");
+                if (idx == -1) continue;
+                String key = java.net.URLDecoder.decode(pair.substring(0, idx), "UTF-8");
+                String value = java.net.URLDecoder.decode(pair.substring(idx + 1), "UTF-8");
+                if ("hash".equals(key)) {
+                    hash = value;
+                } else {
+                    params.put(key, value);
+                }
+            }
+            if (hash == null) return false;
+
+            // Sort keys alphabetically
+            List<String> keys = new ArrayList<>(params.keySet());
+            Collections.sort(keys);
+
+            // Construct data check string
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < keys.size(); i++) {
+                String key = keys.get(i);
+                sb.append(key).append("=").append(params.get(key));
+                if (i < keys.size() - 1) {
+                    sb.append("\n");
+                }
+            }
+
+            // Derive key: HMAC-SHA256("WebAppData", botToken)
+            byte[] secretKey = hmacSha256("WebAppData", props.getBotToken().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            // Compute hash: HMAC-SHA256(dataCheckString, secretKey)
+            byte[] computedHashBytes = hmacSha256(sb.toString(), secretKey);
+
+            // Hex encode
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : computedHashBytes) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) hexString.append('0');
+                hexString.append(hex);
+            }
+
+            return hexString.toString().equals(hash);
+        } catch (Exception e) {
+            log.error("Failed to validate initData", e);
+            return false;
+        }
+    }
+
+    private byte[] hmacSha256(String data, byte[] key) throws Exception {
+        javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+        javax.crypto.spec.SecretKeySpec secretKeySpec = new javax.crypto.spec.SecretKeySpec(key, "HmacSHA256");
+        mac.init(secretKeySpec);
+        return mac.doFinal(data.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
     // ─── Internal ─────────────────────────────────────────────────────────────
 
     private boolean sendWithRetry(String method, Map<String, Object> body,

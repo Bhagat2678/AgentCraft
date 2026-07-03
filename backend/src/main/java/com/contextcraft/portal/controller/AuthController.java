@@ -5,6 +5,10 @@ import com.contextcraft.portal.repository.UserPhoneRepository;
 import com.contextcraft.portal.security.JwtUtils;
 import com.contextcraft.portal.security.PortalUserDetails;
 import com.contextcraft.portal.service.UserService;
+import com.contextcraft.portal.telegram.TelegramChatAdapter;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
@@ -19,8 +23,9 @@ import java.util.Map;
  * The REST token endpoint here supports the React dashboard flow where
  * a user who already went through WhatsApp onboarding can get a fresh JWT.
  *
- * POST /api/v1/auth/token  — Accepts phone+invite-token, returns JWT
- * GET  /api/v1/auth/me     — Returns current principal info
+ * POST /api/v1/auth/token    — Accepts phone+invite-token, returns JWT
+ * POST /api/v1/auth/telegram — Accepts initData, validates, returns JWT
+ * GET  /api/v1/auth/me       — Returns current principal info
  */
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -29,13 +34,19 @@ public class AuthController {
     private final UserPhoneRepository phoneRepository;
     private final UserService userService;
     private final JwtUtils jwtUtils;
+    private final TelegramChatAdapter telegramChatAdapter;
+    private final ObjectMapper objectMapper;
 
     public AuthController(UserPhoneRepository phoneRepository,
                           UserService userService,
-                          JwtUtils jwtUtils) {
+                          JwtUtils jwtUtils,
+                          TelegramChatAdapter telegramChatAdapter,
+                          ObjectMapper objectMapper) {
         this.phoneRepository = phoneRepository;
         this.userService = userService;
         this.jwtUtils = jwtUtils;
+        this.telegramChatAdapter = telegramChatAdapter;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -77,6 +88,46 @@ public class AuthController {
     }
 
     /**
+     * POST /api/v1/auth/telegram
+     * Authenticates a Telegram Mini App session using WebApp initData.
+     *
+     * Request: { "initData": "query_string..." }
+     * Response: { "accessToken": "eyJ..." }
+     */
+    @PostMapping("/telegram")
+    public ResponseEntity<?> authenticateTelegram(@RequestBody Map<String, String> body) {
+        String initData = body.get("initData");
+        if (initData == null || initData.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "initData is required"));
+        }
+
+        if (!telegramChatAdapter.validateInitData(initData)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Invalid initData signature"));
+        }
+
+        try {
+            Long chatId = extractChatIdFromInitData(initData);
+            if (chatId == null) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Could not extract user chat ID from initData"));
+            }
+
+            User user = userService.findByTelegramChatId(chatId)
+                    .orElseThrow(() -> new RuntimeException("No registered portal user found for Telegram Chat ID: " + chatId));
+
+            if (!"ACTIVE".equals(user.getStatus())) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body(Map.of("error", "Account is not active. Check your invite."));
+            }
+
+            String jwt = jwtUtils.generateToken(user.getId(), user.getBusiness().getId());
+            return ResponseEntity.ok(Map.of("accessToken", jwt));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Authentication failed: " + e.getMessage()));
+        }
+    }
+
+    /**
      * GET /api/v1/auth/me
      * Returns the currently authenticated user's principal info.
      */
@@ -90,5 +141,26 @@ public class AuthController {
                 "businessId", principal.getBusinessId(),
                 "phoneNumber", principal.getPhoneNumber() != null ? principal.getPhoneNumber() : ""
         ));
+    }
+
+    private Long extractChatIdFromInitData(String initData) {
+        try {
+            String[] pairs = initData.split("&");
+            for (String pair : pairs) {
+                int idx = pair.indexOf("=");
+                if (idx == -1) continue;
+                String key = java.net.URLDecoder.decode(pair.substring(0, idx), "UTF-8");
+                if ("user".equals(key)) {
+                    String userJson = java.net.URLDecoder.decode(pair.substring(idx + 1), "UTF-8");
+                    JsonNode node = objectMapper.readTree(userJson);
+                    if (node.has("id")) {
+                        return node.get("id").asLong();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Ignore
+        }
+        return null;
     }
 }
