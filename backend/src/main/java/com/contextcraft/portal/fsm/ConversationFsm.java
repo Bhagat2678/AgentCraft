@@ -3,6 +3,7 @@ package com.contextcraft.portal.fsm;
 import com.contextcraft.portal.entity.*;
 import com.contextcraft.portal.repository.*;
 import com.contextcraft.portal.service.*;
+import com.contextcraft.portal.telegram.TelegramChatAdapter;
 import com.contextcraft.portal.whatsapp.WhatsAppChatAdapter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,7 +17,11 @@ import java.util.*;
 /**
  * Core Finite State Machine engine.
  *
- * Entry point: process(phoneNumber, messageBody, rawMessage)
+ * Entry point: process(destinationKey, messageBody, rawMessage)
+ *
+ * destinationKey is either:
+ *  - A phone number (E.164 format) for WhatsApp
+ *  - "telegram:{chatId}" for Telegram
  *
  * For each inbound message:
  *  1. Load (or create) the FsmContext from Redis/DB
@@ -33,7 +38,8 @@ public class ConversationFsm {
     private static final Logger log = LoggerFactory.getLogger(ConversationFsm.class);
 
     private final RedisConversationStore store;
-    private final WhatsAppChatAdapter adapter;
+    private final WhatsAppChatAdapter whatsAppAdapter;
+    private final TelegramChatAdapter telegramAdapter;
     private final BusinessService businessService;
     private final UserService userService;
     private final RoleService roleService;
@@ -43,7 +49,8 @@ public class ConversationFsm {
     private final DepartmentRepository departmentRepository;
 
     public ConversationFsm(RedisConversationStore store,
-                           WhatsAppChatAdapter adapter,
+                           WhatsAppChatAdapter whatsAppAdapter,
+                           TelegramChatAdapter telegramAdapter,
                            BusinessService businessService,
                            UserService userService,
                            RoleService roleService,
@@ -52,7 +59,8 @@ public class ConversationFsm {
                            RoleRepository roleRepository,
                            DepartmentRepository departmentRepository) {
         this.store = store;
-        this.adapter = adapter;
+        this.whatsAppAdapter = whatsAppAdapter;
+        this.telegramAdapter = telegramAdapter;
         this.businessService = businessService;
         this.userService = userService;
         this.roleService = roleService;
@@ -62,11 +70,36 @@ public class ConversationFsm {
         this.departmentRepository = departmentRepository;
     }
 
+    // ─── Channel Routing ──────────────────────────────────────────────────────
+
+    /**
+     * Routes a text message to the appropriate channel adapter based on the
+     * destination key format.
+     */
+    private void sendMessage(String destination, String text) {
+        if (destination.startsWith("telegram:")) {
+            telegramAdapter.sendTextByFsmKey(destination, text);
+        } else {
+            whatsAppAdapter.sendText(destination, text);
+        }
+    }
+
+    /**
+     * Marks a message as read on the appropriate channel.
+     */
+    private void markRead(String destination, String messageId) {
+        if (destination.startsWith("telegram:")) {
+            telegramAdapter.markAsRead(messageId);
+        } else {
+            whatsAppAdapter.markAsRead(messageId);
+        }
+    }
+
     // ─── Entry Point ──────────────────────────────────────────────────────────
 
     public void process(String fromPhone, String messageBody, String messageId) {
         // Mark as read immediately for better UX
-        adapter.markAsRead(messageId);
+        markRead(fromPhone, messageId);
 
         FsmContext ctx = store.load(fromPhone).orElseGet(() -> {
             FsmContext fresh = new FsmContext();
@@ -103,13 +136,13 @@ public class ConversationFsm {
                 case ERROR           -> handleError(ctx);
                 default -> {
                     log.warn("Unhandled state {} for {}", ctx.getState(), fromPhone);
-                    adapter.sendText(fromPhone, "Sorry, something went wrong. Type *HELP* for options.");
+                    sendMessage(fromPhone, "Sorry, something went wrong. Type *HELP* for options.");
                     ctx.setState(FsmState.IDLE);
                 }
             }
         } catch (Exception e) {
             log.error("FSM error for phone {} in state {}: {}", fromPhone, ctx.getState(), e.getMessage(), e);
-            adapter.sendText(fromPhone, "⚠️ An error occurred. Please try again or type *HELP*.");
+            sendMessage(fromPhone, "⚠️ An error occurred. Please try again or type *HELP*.");
         }
 
         store.save(ctx);
@@ -125,16 +158,16 @@ public class ConversationFsm {
             ctx.setUserId(user.getId());
             ctx.setBusinessId(user.getBusiness().getId());
             ctx.setState(FsmState.IDLE);
-            adapter.sendText(ctx.getPhoneNumber(),
+            sendMessage(ctx.getPhoneNumber(),
                     "👋 Welcome back, *" + user.getDisplayName() + "*!\n\n" +
                     "Type *HELP* to see available commands.");
             return;
         }
 
         // Brand new contact — offer portal creation
-        adapter.sendText(ctx.getPhoneNumber(),
+        sendMessage(ctx.getPhoneNumber(),
                 "👋 Welcome to *ContextCraft Business Portal*!\n\n" +
-                "I can help you set up and manage your business via WhatsApp.\n\n" +
+                "I can help you set up and manage your business.\n\n" +
                 "Would you like to:\n" +
                 "1️⃣ Create a new business portal\n" +
                 "2️⃣ Accept an invite (I was invited)\n\n" +
@@ -144,20 +177,20 @@ public class ConversationFsm {
 
         // Handle the response immediately if given
         if ("1".equals(input)) {
-            adapter.sendText(ctx.getPhoneNumber(), "Great! Let's set up your portal.\n\nWhat is your *business name*?");
+            sendMessage(ctx.getPhoneNumber(), "Great! Let's set up your portal.\n\nWhat is your *business name*?");
             ctx.setState(FsmState.SETUP_BNAME);
         } else if ("2".equals(input)) {
-            adapter.sendText(ctx.getPhoneNumber(), "Please check your WhatsApp for an invite message with a link, or ask your admin to re-send the invite.");
+            sendMessage(ctx.getPhoneNumber(), "Please check your WhatsApp for an invite message with a link, or ask your admin to re-send the invite.");
         }
     }
 
     private void handleSetupBname(FsmContext ctx, String input) {
         if (input.length() < 2) {
-            adapter.sendText(ctx.getPhoneNumber(), "Please enter a valid business name (at least 2 characters).");
+            sendMessage(ctx.getPhoneNumber(), "Please enter a valid business name (at least 2 characters).");
             return;
         }
         ctx.getExtras().put("bname", input);
-        adapter.sendText(ctx.getPhoneNumber(),
+        sendMessage(ctx.getPhoneNumber(),
                 "📋 Business type:\n" +
                 "1️⃣ Retail\n2️⃣ Services\n3️⃣ Manufacturing\n4️⃣ Other\n\nReply 1-4");
         ctx.setState(FsmState.SETUP_BTYPE);
@@ -166,29 +199,29 @@ public class ConversationFsm {
     private void handleSetupBtype(FsmContext ctx, String input) {
         Map<String, String> types = Map.of("1","RETAIL","2","SERVICES","3","MANUFACTURING","4","OTHER");
         if (!types.containsKey(input)) {
-            adapter.sendText(ctx.getPhoneNumber(), "Please reply with 1, 2, 3, or 4.");
+            sendMessage(ctx.getPhoneNumber(), "Please reply with 1, 2, 3, or 4.");
             return;
         }
         ctx.getExtras().put("btype", types.get(input));
-        adapter.sendText(ctx.getPhoneNumber(), "What *industry* are you in? (e.g. Technology, Healthcare, Retail)\nOr type *skip*");
+        sendMessage(ctx.getPhoneNumber(), "What *industry* are you in? (e.g. Technology, Healthcare, Retail)\nOr type *skip*");
         ctx.setState(FsmState.SETUP_INDUSTRY);
     }
 
     private void handleSetupIndustry(FsmContext ctx, String input) {
         if (!"skip".equalsIgnoreCase(input)) ctx.getExtras().put("bindustry", input);
-        adapter.sendText(ctx.getPhoneNumber(), "📍 What is your business *location*? (e.g. New York, NY)\nOr type *skip*");
+        sendMessage(ctx.getPhoneNumber(), "📍 What is your business *location*? (e.g. New York, NY)\nOr type *skip*");
         ctx.setState(FsmState.SETUP_LOCATION);
     }
 
     private void handleSetupLocation(FsmContext ctx, String input) {
         if (!"skip".equalsIgnoreCase(input)) ctx.getExtras().put("blocation", input);
-        adapter.sendText(ctx.getPhoneNumber(), "🕐 What are your *working hours*? (e.g. Mon-Fri 9am-6pm)\nOr type *skip*");
+        sendMessage(ctx.getPhoneNumber(), "🕐 What are your *working hours*? (e.g. Mon-Fri 9am-6pm)\nOr type *skip*");
         ctx.setState(FsmState.SETUP_HOURS);
     }
 
     private void handleSetupHours(FsmContext ctx, String input) {
         if (!"skip".equalsIgnoreCase(input)) ctx.getExtras().put("bhours", input);
-        adapter.sendText(ctx.getPhoneNumber(), "🏢 List your *departments* (comma-separated, e.g. Sales, Engineering, HR)\nOr type *skip* to set up later");
+        sendMessage(ctx.getPhoneNumber(), "🏢 List your *departments* (comma-separated, e.g. Sales, Engineering, HR)\nOr type *skip* to set up later");
         ctx.setState(FsmState.SETUP_DEPTS);
     }
 
@@ -207,19 +240,19 @@ public class ConversationFsm {
             extras.getOrDefault("bhours", "—"),
             extras.getOrDefault("bdepts", "—")
         );
-        adapter.sendText(ctx.getPhoneNumber(), summary);
+        sendMessage(ctx.getPhoneNumber(), summary);
         ctx.setState(FsmState.SETUP_CONFIRM);
     }
 
     private void handleSetupConfirm(FsmContext ctx, String input) {
         if ("2".equals(input)) {
             ctx.getExtras().clear();
-            adapter.sendText(ctx.getPhoneNumber(), "Let's start over. What is your *business name*?");
+            sendMessage(ctx.getPhoneNumber(), "Let's start over. What is your *business name*?");
             ctx.setState(FsmState.SETUP_BNAME);
             return;
         }
         if (!"1".equals(input)) {
-            adapter.sendText(ctx.getPhoneNumber(), "Please reply *1* to confirm or *2* to start over.");
+            sendMessage(ctx.getPhoneNumber(), "Please reply *1* to confirm or *2* to start over.");
             return;
         }
 
@@ -266,7 +299,7 @@ public class ConversationFsm {
         ctx.getExtras().clear();
         ctx.setState(FsmState.IDLE);
 
-        adapter.sendText(ctx.getPhoneNumber(),
+        sendMessage(ctx.getPhoneNumber(),
                 "🎉 *Portal Created Successfully!*\n\n" +
                 "Business: *" + business.getName() + "*\n" +
                 "Your role: *CEO*\n\n" +
@@ -282,26 +315,26 @@ public class ConversationFsm {
         switch (cmd) {
             case "TASK", "T" -> {
                 ctx.setPendingTask(new FsmContext.PendingTask());
-                adapter.sendText(ctx.getPhoneNumber(), "📋 *Create Task*\n\nWhat is the *task title*?");
+                sendMessage(ctx.getPhoneNumber(), "📋 *Create Task*\n\nWhat is the *task title*?");
                 ctx.setState(FsmState.TASK_TITLE);
             }
             case "INVITE", "INV" -> {
                 ctx.setPendingInvite(new FsmContext.PendingInvite());
-                adapter.sendText(ctx.getPhoneNumber(), "👤 *Invite Employee*\n\nEnter their *phone number* (E.164 format, e.g. +1555...):");
+                sendMessage(ctx.getPhoneNumber(), "👤 *Invite Employee*\n\nEnter their *phone number* (E.164 format, e.g. +1555...):");
                 ctx.setState(FsmState.INVITE_PHONE);
             }
             case "STATS", "REPORT", "S" -> {
                 sendStatsToUser(ctx);
             }
             case "HELP", "H" -> {
-                adapter.sendText(ctx.getPhoneNumber(),
+                sendMessage(ctx.getPhoneNumber(),
                         "📚 *Available Commands*\n\n" +
                         "• *TASK* — Create a new task\n" +
                         "• *INVITE* — Invite a team member\n" +
                         "• *STATS* — View business KPIs\n" +
                         "• *HELP* — Show this menu");
             }
-            default -> adapter.sendText(ctx.getPhoneNumber(),
+            default -> sendMessage(ctx.getPhoneNumber(),
                     "I didn't understand that. Type *HELP* to see available commands.");
         }
     }
@@ -310,17 +343,17 @@ public class ConversationFsm {
 
     private void handleTaskTitle(FsmContext ctx, String input) {
         if (input.length() < 3) {
-            adapter.sendText(ctx.getPhoneNumber(), "Please enter a task title (at least 3 characters).");
+            sendMessage(ctx.getPhoneNumber(), "Please enter a task title (at least 3 characters).");
             return;
         }
         ctx.getPendingTask().setTitle(input);
-        adapter.sendText(ctx.getPhoneNumber(), "📝 Task *description* (or type *skip*):");
+        sendMessage(ctx.getPhoneNumber(), "📝 Task *description* (or type *skip*):");
         ctx.setState(FsmState.TASK_DESC);
     }
 
     private void handleTaskDesc(FsmContext ctx, String input) {
         if (!"skip".equalsIgnoreCase(input)) ctx.getPendingTask().setDescription(input);
-        adapter.sendText(ctx.getPhoneNumber(), "📅 *Due date*? (e.g. 2025-08-01 or *skip*):");
+        sendMessage(ctx.getPhoneNumber(), "📅 *Due date*? (e.g. 2025-08-01 or *skip*):");
         ctx.setState(FsmState.TASK_DUE);
     }
 
@@ -330,11 +363,11 @@ public class ConversationFsm {
                 OffsetDateTime.parse(input + "T23:59:59Z");
                 ctx.getPendingTask().setDueDate(input + "T23:59:59Z");
             } catch (DateTimeParseException e) {
-                adapter.sendText(ctx.getPhoneNumber(), "Invalid date. Use format YYYY-MM-DD (e.g. 2025-08-01) or type *skip*.");
+                sendMessage(ctx.getPhoneNumber(), "Invalid date. Use format YYYY-MM-DD (e.g. 2025-08-01) or type *skip*.");
                 return;
             }
         }
-        adapter.sendText(ctx.getPhoneNumber(),
+        sendMessage(ctx.getPhoneNumber(),
                 "🔥 *Priority*:\n1️⃣ Low\n2️⃣ Medium\n3️⃣ High\n4️⃣ Critical\n\nReply 1-4:");
         ctx.setState(FsmState.TASK_PRIORITY);
     }
@@ -342,11 +375,11 @@ public class ConversationFsm {
     private void handleTaskPriority(FsmContext ctx, String input) {
         Map<String, String> priorities = Map.of("1","LOW","2","MEDIUM","3","HIGH","4","CRITICAL");
         if (!priorities.containsKey(input)) {
-            adapter.sendText(ctx.getPhoneNumber(), "Please reply 1, 2, 3, or 4.");
+            sendMessage(ctx.getPhoneNumber(), "Please reply 1, 2, 3, or 4.");
             return;
         }
         ctx.getPendingTask().setPriority(priorities.get(input));
-        adapter.sendText(ctx.getPhoneNumber(), "👤 Enter the *assignee's phone number* (or *skip* to leave unassigned):");
+        sendMessage(ctx.getPhoneNumber(), "👤 Enter the *assignee's phone number* (or *skip* to leave unassigned):");
         ctx.setState(FsmState.TASK_ASSIGN);
     }
 
@@ -357,7 +390,7 @@ public class ConversationFsm {
                 ctx.getPendingTask().setAssigneePhone(input);
                 ctx.getPendingTask().setAssigneeId(assignee.getId());
             } catch (Exception e) {
-                adapter.sendText(ctx.getPhoneNumber(),
+                sendMessage(ctx.getPhoneNumber(),
                         "⚠️ No user found with phone *" + input + "*. Please check the number or type *skip*.");
                 return;
             }
@@ -373,7 +406,7 @@ public class ConversationFsm {
                 t.getPriority(),
                 t.getAssigneePhone() != null ? t.getAssigneePhone() : "Unassigned"
         );
-        adapter.sendText(ctx.getPhoneNumber(), summary);
+        sendMessage(ctx.getPhoneNumber(), summary);
         ctx.setState(FsmState.TASK_CONFIRM);
     }
 
@@ -381,17 +414,17 @@ public class ConversationFsm {
         if ("3".equals(input)) {
             ctx.setPendingTask(null);
             ctx.setState(FsmState.IDLE);
-            adapter.sendText(ctx.getPhoneNumber(), "❌ Task cancelled.");
+            sendMessage(ctx.getPhoneNumber(), "❌ Task cancelled.");
             return;
         }
         if ("2".equals(input)) {
             ctx.setPendingTask(new FsmContext.PendingTask());
-            adapter.sendText(ctx.getPhoneNumber(), "Let's redo. What is the *task title*?");
+            sendMessage(ctx.getPhoneNumber(), "Let's redo. What is the *task title*?");
             ctx.setState(FsmState.TASK_TITLE);
             return;
         }
         if (!"1".equals(input)) {
-            adapter.sendText(ctx.getPhoneNumber(), "Reply *1* Confirm | *2* Edit | *3* Cancel");
+            sendMessage(ctx.getPhoneNumber(), "Reply *1* Confirm | *2* Edit | *3* Cancel");
             return;
         }
 
@@ -406,7 +439,7 @@ public class ConversationFsm {
 
         ctx.setPendingTask(null);
         ctx.setState(FsmState.IDLE);
-        adapter.sendText(ctx.getPhoneNumber(),
+        sendMessage(ctx.getPhoneNumber(),
                 "✅ *Task created!* (ID: #" + created.getId().toString().substring(0, 8).toUpperCase() + ")\n\n" +
                 (t.getAssigneePhone() != null
                     ? "Assignee *" + t.getAssigneePhone() + "* has been notified."
@@ -415,7 +448,7 @@ public class ConversationFsm {
 
         // Notify assignee
         if (t.getAssigneePhone() != null) {
-            adapter.sendText(t.getAssigneePhone(),
+            sendMessage(t.getAssigneePhone(),
                     "📋 *New Task Assigned to You!*\n\n" +
                     "• *" + t.getTitle() + "*\n" +
                     (t.getDescription() != null ? "• " + t.getDescription() + "\n" : "") +
@@ -429,7 +462,7 @@ public class ConversationFsm {
 
     private void handleInvitePhone(FsmContext ctx, String input) {
         if (!input.startsWith("+") || input.length() < 8) {
-            adapter.sendText(ctx.getPhoneNumber(), "Please enter a valid phone in E.164 format (e.g. +15550001234).");
+            sendMessage(ctx.getPhoneNumber(), "Please enter a valid phone in E.164 format (e.g. +15550001234).");
             return;
         }
         ctx.getPendingInvite().setPhoneNumber(input);
@@ -443,7 +476,7 @@ public class ConversationFsm {
             ctx.getExtras().put("roleName_" + (i + 1), roles.get(i).getName());
         }
         sb.append("\nReply with the number:");
-        adapter.sendText(ctx.getPhoneNumber(), sb.toString());
+        sendMessage(ctx.getPhoneNumber(), sb.toString());
         ctx.setState(FsmState.INVITE_ROLE);
     }
 
@@ -451,7 +484,7 @@ public class ConversationFsm {
         String roleIdStr = ctx.getExtras().get("role_" + input);
         String roleName  = ctx.getExtras().get("roleName_" + input);
         if (roleIdStr == null) {
-            adapter.sendText(ctx.getPhoneNumber(), "Invalid selection. Reply with the role number shown above.");
+            sendMessage(ctx.getPhoneNumber(), "Invalid selection. Reply with the role number shown above.");
             return;
         }
         ctx.getPendingInvite().setRoleId(UUID.fromString(roleIdStr));
@@ -467,7 +500,7 @@ public class ConversationFsm {
                 ctx.getExtras().put("dept_" + (i + 1), depts.get(i).getId().toString());
                 ctx.getExtras().put("deptName_" + (i + 1), depts.get(i).getName());
             }
-            adapter.sendText(ctx.getPhoneNumber(), sb.toString());
+            sendMessage(ctx.getPhoneNumber(), sb.toString());
             ctx.setState(FsmState.INVITE_DEPT);
         }
     }
@@ -486,7 +519,7 @@ public class ConversationFsm {
 
     private void proceedToInviteConfirm(FsmContext ctx) {
         FsmContext.PendingInvite inv = ctx.getPendingInvite();
-        adapter.sendText(ctx.getPhoneNumber(),
+        sendMessage(ctx.getPhoneNumber(),
                 "📤 *Confirm Invite*\n\n" +
                 "• Phone: " + inv.getPhoneNumber() + "\n" +
                 "• Role: " + inv.getRoleName() + "\n" +
@@ -499,11 +532,11 @@ public class ConversationFsm {
         if ("2".equals(input)) {
             ctx.setPendingInvite(null);
             ctx.setState(FsmState.IDLE);
-            adapter.sendText(ctx.getPhoneNumber(), "❌ Invite cancelled.");
+            sendMessage(ctx.getPhoneNumber(), "❌ Invite cancelled.");
             return;
         }
         if (!"1".equals(input)) {
-            adapter.sendText(ctx.getPhoneNumber(), "Reply *1* to send or *2* to cancel.");
+            sendMessage(ctx.getPhoneNumber(), "Reply *1* to send or *2* to cancel.");
             return;
         }
 
@@ -514,7 +547,7 @@ public class ConversationFsm {
         );
 
         // Send invite to the employee
-        adapter.sendText(inv.getPhoneNumber(),
+        sendMessage(inv.getPhoneNumber(),
                 "🎉 *You've been invited to join a business portal on ContextCraft!*\n\n" +
                 "Role: *" + inv.getRoleName() + "*\n\n" +
                 "Reply *ACCEPT* to join, or ask your admin for help.\n" +
@@ -522,7 +555,7 @@ public class ConversationFsm {
 
         ctx.setPendingInvite(null);
         ctx.setState(FsmState.IDLE);
-        adapter.sendText(ctx.getPhoneNumber(),
+        sendMessage(ctx.getPhoneNumber(),
                 "✅ Invite sent to *" + inv.getPhoneNumber() + "* as *" + inv.getRoleName() + "*.");
     }
 
@@ -535,12 +568,12 @@ public class ConversationFsm {
                                     ctx.getPendingReviewAssignmentId(),
                                     ctx.getUserId(), true, null);
             ctx.setState(FsmState.IDLE);
-            adapter.sendText(ctx.getPhoneNumber(), "✅ Task *approved* and employee notified.");
+            sendMessage(ctx.getPhoneNumber(), "✅ Task *approved* and employee notified.");
         } else if ("2".equals(input)) {
-            adapter.sendText(ctx.getPhoneNumber(), "Please provide the *rejection reason*:");
+            sendMessage(ctx.getPhoneNumber(), "Please provide the *rejection reason*:");
             ctx.setState(FsmState.TASK_REJECT_REASON);
         } else {
-            adapter.sendText(ctx.getPhoneNumber(), "Reply *1* Approve | *2* Reject");
+            sendMessage(ctx.getPhoneNumber(), "Reply *1* Approve | *2* Reject");
         }
     }
 
@@ -549,12 +582,12 @@ public class ConversationFsm {
                                 ctx.getPendingReviewAssignmentId(),
                                 ctx.getUserId(), false, input);
         ctx.setState(FsmState.IDLE);
-        adapter.sendText(ctx.getPhoneNumber(), "❌ Task *rejected*. Employee has been notified with your reason.");
+        sendMessage(ctx.getPhoneNumber(), "❌ Task *rejected*. Employee has been notified with your reason.");
     }
 
     private void handleError(FsmContext ctx) {
         ctx.setState(FsmState.IDLE);
-        adapter.sendText(ctx.getPhoneNumber(), "🔄 Session reset. Type *HELP* for options.");
+        sendMessage(ctx.getPhoneNumber(), "🔄 Session reset. Type *HELP* for options.");
     }
 
     // ─── Stats ────────────────────────────────────────────────────────────────
@@ -562,7 +595,7 @@ public class ConversationFsm {
     private void sendStatsToUser(FsmContext ctx) {
         try {
             Map<String, Object> stats = taskService.getKpiSummary(ctx.getBusinessId());
-            adapter.sendText(ctx.getPhoneNumber(),
+            sendMessage(ctx.getPhoneNumber(),
                     "📊 *Business Summary*\n\n" +
                     "• Open: " + stats.getOrDefault("open", 0) + "\n" +
                     "• Done: " + stats.getOrDefault("done", 0) + "\n" +
@@ -571,7 +604,7 @@ public class ConversationFsm {
                     "• Top performer: " + stats.getOrDefault("topPerformer", "—")
             );
         } catch (Exception e) {
-            adapter.sendText(ctx.getPhoneNumber(), "Could not retrieve stats. Please try again later.");
+            sendMessage(ctx.getPhoneNumber(), "Could not retrieve stats. Please try again later.");
         }
     }
 }

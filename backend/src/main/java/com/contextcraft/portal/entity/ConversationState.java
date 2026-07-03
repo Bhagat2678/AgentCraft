@@ -13,7 +13,7 @@ import java.util.UUID;
 public class ConversationState {
 
     @Id
-    @Column(name = "phone_number", length = 20)
+    @Column(name = "phone_number", length = 100)
     private String phoneNumber;
 
     @Column(name = "business_id")
