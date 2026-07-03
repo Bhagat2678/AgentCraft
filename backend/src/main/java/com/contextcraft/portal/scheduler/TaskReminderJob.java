@@ -36,12 +36,21 @@ public class TaskReminderJob implements Job {
 
     private static final Logger log = LoggerFactory.getLogger(TaskReminderJob.class);
 
-    private final TaskRepository taskRepository;
-    private final BusinessRepository businessRepository;
-    private final UserPhoneRepository phoneRepository;
-    private final TelegramUserRepository telegramUserRepository;
-    private final WhatsAppChatAdapter whatsAppAdapter;
-    private final TelegramChatAdapter telegramAdapter;
+    @org.springframework.beans.factory.annotation.Autowired
+    private TaskRepository taskRepository;
+    @org.springframework.beans.factory.annotation.Autowired
+    private BusinessRepository businessRepository;
+    @org.springframework.beans.factory.annotation.Autowired
+    private UserPhoneRepository phoneRepository;
+    @org.springframework.beans.factory.annotation.Autowired
+    private TelegramUserRepository telegramUserRepository;
+    @org.springframework.beans.factory.annotation.Autowired
+    private WhatsAppChatAdapter whatsAppAdapter;
+    @org.springframework.beans.factory.annotation.Autowired
+    private TelegramChatAdapter telegramAdapter;
+
+    public TaskReminderJob() {
+    }
 
     public TaskReminderJob(TaskRepository taskRepository,
                            BusinessRepository businessRepository,
@@ -125,10 +134,9 @@ public class TaskReminderJob implements Job {
     }
 
     private String getPrimaryPhone(UUID userId) {
-        return phoneRepository.findAll().stream()
-                .filter(p -> p.getUser().getId().equals(userId) && p.isPrimary())
+        return phoneRepository.findByUserIdAndIsPrimaryTrue(userId)
                 .map(UserPhone::getPhoneNumber)
-                .findFirst().orElse(null);
+                .orElse(null);
     }
 
     private Long getTelegramChatId(UUID userId) {

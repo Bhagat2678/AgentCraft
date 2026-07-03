@@ -12,6 +12,8 @@ public interface TelegramUserRepository extends JpaRepository<TelegramUser, UUID
 
     Optional<TelegramUser> findByChatId(Long chatId);
 
+    Optional<TelegramUser> findByUserId(UUID userId);
+
     Optional<TelegramUser> findByUsername(String username);
 
     Optional<TelegramUser> findByUser(com.contextcraft.portal.entity.User user);

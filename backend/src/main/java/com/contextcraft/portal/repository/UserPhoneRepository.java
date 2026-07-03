@@ -12,6 +12,8 @@ public interface UserPhoneRepository extends JpaRepository<UserPhone, UUID> {
 
     Optional<UserPhone> findByPhoneNumber(String phoneNumber);
 
+    Optional<UserPhone> findByUserIdAndIsPrimaryTrue(UUID userId);
+
     Optional<UserPhone> findByInviteToken(String token);
 
     boolean existsByPhoneNumber(String phoneNumber);

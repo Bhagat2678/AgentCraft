@@ -100,13 +100,22 @@ public class TaskService {
         Task task = taskRepository.findById(taskId)
                 .orElseThrow(() -> new RuntimeException("Task not found: " + taskId));
 
-        TaskAssignment assignment = taskAssignmentRepository.findById(assignmentId)
-                .orElseThrow(() -> new RuntimeException("Assignment not found: " + assignmentId));
+        TaskAssignment assignment;
+        if (assignmentId != null) {
+            assignment = taskAssignmentRepository.findById(assignmentId)
+                    .orElseThrow(() -> new RuntimeException("Assignment not found: " + assignmentId));
+        } else {
+            assignment = taskAssignmentRepository.findByTaskId(taskId).stream()
+                    .filter(a -> a.getVerifiedAt() == null)
+                    .findFirst()
+                    .orElseThrow(() -> new RuntimeException("No active assignment found for task: " + taskId));
+        }
 
         if (approved) {
             task.setStatus("APPROVED");
             assignment.setVerifiedBy(verifierId);
             assignment.setVerifiedAt(OffsetDateTime.now());
+            assignment.setCompletedAt(OffsetDateTime.now());
         } else {
             task.setStatus("REJECTED");
             assignment.setRejectionReason(rejectionReason);
@@ -137,9 +146,8 @@ public class TaskService {
                 t.getDueDate() != null && t.getDueDate().isBefore(now) &&
                 !"APPROVED".equals(t.getStatus()) && !"CLOSED".equals(t.getStatus())).count();
 
-        OptionalDouble avgHours = taskAssignmentRepository.findAll().stream()
-                .filter(a -> a.getCompletedAt() != null && a.getAssignedAt() != null
-                             && a.getTask().getBusiness().getId().equals(businessId))
+        OptionalDouble avgHours = taskAssignmentRepository.findByTask_Business_Id(businessId).stream()
+                .filter(a -> a.getCompletedAt() != null && a.getAssignedAt() != null)
                 .mapToLong(a -> java.time.Duration.between(a.getAssignedAt(), a.getCompletedAt()).toHours())
                 .average();
 
@@ -152,10 +160,27 @@ public class TaskService {
         return kpi;
     }
 
+    /**
+     * Lists open task assignments for a specific assignee.
+     */
+    @Transactional(readOnly = true)
+    public List<TaskAssignment> listOpenAssignmentsByAssignee(UUID assigneeId) {
+        return taskAssignmentRepository.findByAssigneeId(assigneeId).stream()
+                .filter(a -> a.getCompletedAt() == null &&
+                        !"APPROVED".equals(a.getTask().getStatus()) &&
+                        !"CLOSED".equals(a.getTask().getStatus()))
+                .collect(java.util.stream.Collectors.toList());
+    }
+
     @Transactional(readOnly = true)
     public List<Task> listByBusiness(UUID businessId, String status, UUID assigneeId, String priority) {
-        if (status != null) return taskRepository.findByBusinessIdAndStatus(businessId, status);
-        return taskRepository.findByBusinessId(businessId);
+        List<Task> tasks = taskRepository.findByBusinessId(businessId);
+        return tasks.stream()
+                .filter(t -> status == null || status.equalsIgnoreCase(t.getStatus()))
+                .filter(t -> priority == null || priority.equalsIgnoreCase(t.getPriority()))
+                .filter(t -> assigneeId == null || (t.getAssignments() != null && t.getAssignments().stream()
+                        .anyMatch(a -> a.getAssignee().getId().equals(assigneeId))))
+                .collect(java.util.stream.Collectors.toList());
     }
 
     @Transactional(readOnly = true)

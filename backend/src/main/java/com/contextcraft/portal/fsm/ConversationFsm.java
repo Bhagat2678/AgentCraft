@@ -49,8 +49,10 @@ public class ConversationFsm {
     private final TelegramUserRepository telegramUserRepo;
     private final RoleRepository roleRepository;
     private final DepartmentRepository departmentRepository;
+    private final TaskRepository taskRepository;
     private final TaskAssignmentRepository taskAssignmentRepository;
     private final AttachmentRepository attachmentRepository;
+    private final TelegramUserRepository telegramUserRepository;
 
     public ConversationFsm(RedisConversationStore store,
                            WhatsAppChatAdapter whatsAppAdapter,
@@ -63,6 +65,7 @@ public class ConversationFsm {
                            TelegramUserRepository telegramUserRepo,
                            RoleRepository roleRepository,
                            DepartmentRepository departmentRepository,
+                           TaskRepository taskRepository,
                            TaskAssignmentRepository taskAssignmentRepository,
                            AttachmentRepository attachmentRepository) {
         this.store = store;
@@ -74,8 +77,10 @@ public class ConversationFsm {
         this.taskService = taskService;
         this.phoneRepo = phoneRepo;
         this.telegramUserRepo = telegramUserRepo;
+        this.telegramUserRepository = telegramUserRepo;
         this.roleRepository = roleRepository;
         this.departmentRepository = departmentRepository;
+        this.taskRepository = taskRepository;
         this.taskAssignmentRepository = taskAssignmentRepository;
         this.attachmentRepository = attachmentRepository;
     }
@@ -458,7 +463,7 @@ public class ConversationFsm {
             userService.acceptInvite(inviteToken);
             savedCeo = userService.findByPhone(ctx.getPhoneNumber());
         }
-        business.setOwnerUserId(savedCeo.getId());
+        businessService.setOwner(business.getId(), savedCeo.getId());
 
         // Seed default roles and assign CEO
         roleService.seedDefaultRoles(business.getId());
@@ -517,72 +522,11 @@ public class ConversationFsm {
             case "STATS", "REPORT", "S", "/STATS" -> {
                 sendStatsToUser(ctx);
             }
-            case "DONE", "/DONE" -> {
-                UUID userId = ctx.getUserId();
-                if (userId == null) {
-                    sendMessage(ctx.getPhoneNumber(), "You are not registered as a user yet.");
-                    break;
-                }
-                List<TaskAssignment> assignments = taskAssignmentRepository.findByAssigneeId(userId);
-                Optional<TaskAssignment> active = assignments.stream()
-                        .filter(a -> a.getCompletedAt() == null &&
-                                     ("ASSIGNED".equals(a.getTask().getStatus()) || "REJECTED".equals(a.getTask().getStatus())))
-                        .findFirst();
-
-                if (active.isEmpty()) {
-                    sendMessage(ctx.getPhoneNumber(), "You don't have any active tasks assigned to you.");
-                } else {
-                    TaskAssignment assignment = active.get();
-                    Task task = assignment.getTask();
-                    taskService.updateStatus(task.getId(), userId, "SUBMITTED", "Submitted via chat");
-                    assignment.setCompletedAt(OffsetDateTime.now());
-                    taskAssignmentRepository.save(assignment);
-
-                    sendMessage(ctx.getPhoneNumber(), "✅ Task *" + task.getTitle() + "* marked as complete. Awaiting manager approval!");
-
-                    User manager = assignment.getAssignedBy() != null
-                            ? userService.getById(assignment.getAssignedBy())
-                            : task.getCreatedBy();
-
-                    if (manager != null) {
-                        String managerPhone = getPrimaryPhone(manager.getId());
-                        Long managerTelegramId = getTelegramChatId(manager.getId());
-
-                        if (managerPhone != null || managerTelegramId != null) {
-                            String managerFsmKey = managerTelegramId != null
-                                    ? TelegramChatAdapter.toFsmKey(managerTelegramId)
-                                    : managerPhone;
-
-                            FsmContext managerCtx = store.load(managerFsmKey).orElseGet(() -> {
-                                FsmContext m = new FsmContext();
-                                m.setPhoneNumber(managerFsmKey);
-                                return m;
-                            });
-
-                            managerCtx.setState(FsmState.TASK_REVIEW_DECISION);
-                            managerCtx.setPendingReviewTaskId(task.getId());
-                            managerCtx.setPendingReviewAssignmentId(assignment.getId());
-                            store.save(managerCtx);
-
-                            String managerMsg = "🔔 *Task Submitted for Approval*\n\n" +
-                                                "Employee: *" + ctx.getPhoneNumber() + "*\n" +
-                                                "Task: *" + task.getTitle() + "*\n\n" +
-                                                "Reply *1* to Approve or *2* to Reject.";
-
-                            if (managerTelegramId != null) {
-                                List<List<Map<String, String>>> keyboard = List.of(
-                                    List.of(
-                                        TelegramChatAdapter.button("Approve", "1"),
-                                        TelegramChatAdapter.button("Reject", "2")
-                                    )
-                                );
-                                sendMenu(managerFsmKey, managerMsg, keyboard);
-                            } else {
-                                sendMessage(managerFsmKey, managerMsg + "\n\nReply *1* Approve | *2* Reject");
-                            }
-                        }
-                    }
-                }
+            case "DONE", "D", "/DONE" -> {
+                handleDone(ctx, input);
+            }
+            case "REVIEW", "R", "/REVIEW" -> {
+                handleReview(ctx, input);
             }
             case "HELP", "H", "/HELP" -> {
                 List<List<Map<String, String>>> helpKeyboard = List.of(
@@ -600,7 +544,8 @@ public class ConversationFsm {
                         "• *TASK* — Create a new task\n" +
                         "• *INVITE* — Invite a team member\n" +
                         "• *STATS* — View business KPIs\n" +
-                        "• *DONE* — Mark your active task complete\n" +
+                        "• *DONE* — Complete an assigned task\n" +
+                        "• *REVIEW* — Review employee submissions\n" +
                         "• *HELP* — Show this menu",
                         helpKeyboard);
             }
@@ -884,6 +829,15 @@ public class ConversationFsm {
                                     ctx.getUserId(), true, null);
             ctx.setState(FsmState.IDLE);
             sendMessage(ctx.getPhoneNumber(), "✅ Task *approved* and employee notified.");
+
+            // Notify assignee
+            Optional<TaskAssignment> optAssignment = taskAssignmentRepository.findById(ctx.getPendingReviewAssignmentId());
+            if (optAssignment.isPresent()) {
+                notifyAssigneeOfApproval(optAssignment.get(), true, null);
+            }
+
+            ctx.setPendingReviewTaskId(null);
+            ctx.setPendingReviewAssignmentId(null);
         } else if ("2".equals(input)) {
             sendMessage(ctx.getPhoneNumber(), "Please provide the *rejection reason*:");
             ctx.setState(FsmState.TASK_REJECT_REASON);
@@ -898,6 +852,170 @@ public class ConversationFsm {
                                 ctx.getUserId(), false, input);
         ctx.setState(FsmState.IDLE);
         sendMessage(ctx.getPhoneNumber(), "❌ Task *rejected*. Employee has been notified with your reason.");
+
+        // Notify assignee
+        Optional<TaskAssignment> optAssignment = taskAssignmentRepository.findById(ctx.getPendingReviewAssignmentId());
+        if (optAssignment.isPresent()) {
+            notifyAssigneeOfApproval(optAssignment.get(), false, input);
+        }
+
+        ctx.setPendingReviewTaskId(null);
+        ctx.setPendingReviewAssignmentId(null);
+    }
+
+    private void handleDone(FsmContext ctx, String input) {
+        List<TaskAssignment> assignments = taskService.listOpenAssignmentsByAssignee(ctx.getUserId());
+        if (assignments.isEmpty()) {
+            sendMessage(ctx.getPhoneNumber(), "ℹ️ You don't have any pending tasks assigned to you.");
+            return;
+        }
+
+        String[] parts = input.trim().split("\\s+");
+        TaskAssignment targetAssignment = null;
+
+        if (parts.length > 1) {
+            try {
+                int index = Integer.parseInt(parts[1]) - 1;
+                if (index >= 0 && index < assignments.size()) {
+                    targetAssignment = assignments.get(index);
+                } else {
+                    sendMessage(ctx.getPhoneNumber(), "❌ Invalid task number. Choose between 1 and " + assignments.size());
+                    return;
+                }
+            } catch (NumberFormatException e) {
+                sendMessage(ctx.getPhoneNumber(), "❌ Please specify a valid task number (e.g. *DONE 1*).");
+                return;
+            }
+        } else {
+            if (assignments.size() == 1) {
+                targetAssignment = assignments.get(0);
+            } else {
+                StringBuilder sb = new StringBuilder("📋 *Pending Tasks Assigned to You*:\n\n");
+                for (int i = 0; i < assignments.size(); i++) {
+                    sb.append((i + 1)).append("️⃣ *").append(assignments.get(i).getTask().getTitle()).append("*\n");
+                }
+                sb.append("\nTo mark a task as done, reply: *DONE <number>* (e.g., *DONE 1*)");
+                sendMessage(ctx.getPhoneNumber(), sb.toString());
+                return;
+            }
+        }
+
+        if (targetAssignment != null) {
+            Task task = targetAssignment.getTask();
+            taskService.updateStatus(task.getId(), ctx.getUserId(), "SUBMITTED", "Submitted via chatbot");
+
+            sendMessage(ctx.getPhoneNumber(), "✅ Task *" + task.getTitle() + "* has been marked as complete and submitted to your manager for approval.");
+
+            // Notify manager/creator
+            User creator = task.getCreatedBy();
+            notifyManagerOfSubmission(creator, task, targetAssignment, ctx);
+        }
+    }
+
+    private void notifyManagerOfSubmission(User manager, Task task, TaskAssignment assignment, FsmContext employeeCtx) {
+        User employee = userService.getById(employeeCtx.getUserId());
+        String employeeName = employee.getDisplayName() != null ? employee.getDisplayName() : employeeCtx.getPhoneNumber();
+
+        // Check Telegram first
+        Optional<TelegramUser> tgUser = telegramUserRepository.findByUserId(manager.getId());
+        if (tgUser.isPresent()) {
+            String managerDest = TelegramChatAdapter.toFsmKey(tgUser.get().getChatId());
+            sendMessage(managerDest, "🔔 *Task Submitted for Review!*\n\n" +
+                    "Employee *" + employeeName + "* has completed task: *" + task.getTitle() + "*\n\n" +
+                    "Reply *REVIEW* to approve or reject this task.");
+            return;
+        }
+
+        // Fallback to WhatsApp
+        Optional<UserPhone> primaryPhone = phoneRepo.findByUserIdAndIsPrimaryTrue(manager.getId());
+        if (primaryPhone.isPresent()) {
+            sendMessage(primaryPhone.get().getPhoneNumber(), "🔔 *Task Submitted for Review!*\n\n" +
+                    "Employee *" + employeeName + "* has completed task: *" + task.getTitle() + "*\n\n" +
+                    "Reply *REVIEW* to approve or reject this task.");
+        }
+    }
+
+    private void handleReview(FsmContext ctx, String input) {
+        List<Task> submittedTasks = taskRepository.findByBusinessIdAndStatus(ctx.getBusinessId(), "SUBMITTED");
+        if (submittedTasks.isEmpty()) {
+            sendMessage(ctx.getPhoneNumber(), "ℹ️ There are no tasks pending review.");
+            return;
+        }
+
+        String[] parts = input.trim().split("\\s+");
+        Task targetTask = null;
+
+        if (parts.length > 1) {
+            try {
+                int index = Integer.parseInt(parts[1]) - 1;
+                if (index >= 0 && index < submittedTasks.size()) {
+                    targetTask = submittedTasks.get(index);
+                } else {
+                    sendMessage(ctx.getPhoneNumber(), "❌ Invalid task number. Choose between 1 and " + submittedTasks.size());
+                    return;
+                }
+            } catch (NumberFormatException e) {
+                sendMessage(ctx.getPhoneNumber(), "❌ Please specify a valid task number (e.g. *REVIEW 1*).");
+                return;
+            }
+        } else {
+            if (submittedTasks.size() == 1) {
+                targetTask = submittedTasks.get(0);
+            } else {
+                StringBuilder sb = new StringBuilder("📋 *Tasks Pending Review*:\n\n");
+                for (int i = 0; i < submittedTasks.size(); i++) {
+                    sb.append((i + 1)).append("️⃣ *").append(submittedTasks.get(i).getTitle()).append("*\n");
+                }
+                sb.append("\nTo review a task, reply: *REVIEW <number>* (e.g., *REVIEW 1*)");
+                sendMessage(ctx.getPhoneNumber(), sb.toString());
+                return;
+            }
+        }
+
+        if (targetTask != null) {
+            TaskAssignment assignment = taskAssignmentRepository.findByTaskId(targetTask.getId()).stream()
+                    .filter(a -> a.getVerifiedAt() == null)
+                    .findFirst().orElse(null);
+
+            if (assignment == null) {
+                sendMessage(ctx.getPhoneNumber(), "❌ Could not find assignment details for this task.");
+                return;
+            }
+
+            ctx.setPendingReviewTaskId(targetTask.getId());
+            ctx.setPendingReviewAssignmentId(assignment.getId());
+            ctx.setState(FsmState.TASK_REVIEW_DECISION);
+
+            String assigneeName = assignment.getAssignee().getDisplayName() != null
+                    ? assignment.getAssignee().getDisplayName()
+                    : "Unknown";
+
+            sendMessage(ctx.getPhoneNumber(), "📋 *Review Task*\n\n" +
+                    "• *Title:* " + targetTask.getTitle() + "\n" +
+                    "• *Assignee:* " + assigneeName + "\n\n" +
+                    "Reply:\n*1* Approve\n*2* Reject");
+        }
+    }
+
+    private void notifyAssigneeOfApproval(TaskAssignment assignment, boolean approved, String reason) {
+        User assignee = assignment.getAssignee();
+        String message = approved
+                ? "🎉 *Task Approved!*\n\nYour manager has approved your work for task: *" + assignment.getTask().getTitle() + "*"
+                : "❌ *Task Reclaimed/Rejected*\n\nYour manager has rejected your work for task: *" + assignment.getTask().getTitle() + "*\n• *Reason:* " + reason + "\n\nPlease correct it and try again.";
+
+        // Check Telegram first
+        Optional<TelegramUser> tgUser = telegramUserRepository.findByUserId(assignee.getId());
+        if (tgUser.isPresent()) {
+            String dest = TelegramChatAdapter.toFsmKey(tgUser.get().getChatId());
+            sendMessage(dest, message);
+            return;
+        }
+
+        // Fallback to WhatsApp
+        Optional<UserPhone> primaryPhone = phoneRepo.findByUserIdAndIsPrimaryTrue(assignee.getId());
+        if (primaryPhone.isPresent()) {
+            sendMessage(primaryPhone.get().getPhoneNumber(), message);
+        }
     }
 
     private void handleError(FsmContext ctx) {

@@ -25,19 +25,22 @@ public class UserService {
     private final BusinessRepository businessRepository;
     private final RoleRepository roleRepository;
     private final UserRoleRepository userRoleRepository;
+    private final DepartmentRepository departmentRepository;
 
     public UserService(UserRepository userRepository,
                        UserPhoneRepository userPhoneRepository,
                        TelegramUserRepository telegramUserRepository,
                        BusinessRepository businessRepository,
                        RoleRepository roleRepository,
-                       UserRoleRepository userRoleRepository) {
+                       UserRoleRepository userRoleRepository,
+                       DepartmentRepository departmentRepository) {
         this.userRepository = userRepository;
         this.userPhoneRepository = userPhoneRepository;
         this.telegramUserRepository = telegramUserRepository;
         this.businessRepository = businessRepository;
         this.roleRepository = roleRepository;
         this.userRoleRepository = userRoleRepository;
+        this.departmentRepository = departmentRepository;
     }
 
     @Transactional(readOnly = true)
@@ -126,7 +129,7 @@ public class UserService {
             Role role = roleRepository.findById(roleId)
                     .orElseThrow(() -> new RuntimeException("Role not found: " + roleId));
             Department dept = departmentId != null
-                    ? new Department() {{ setId(departmentId); }}
+                    ? departmentRepository.getReferenceById(departmentId)
                     : null;
 
             UserRole ur = new UserRole();
@@ -224,8 +227,7 @@ public class UserService {
         ur.setRole(role);
         ur.setAssignedBy(assignedBy);
         if (departmentId != null) {
-            Department dept = new Department();
-            dept.setId(departmentId);
+            Department dept = departmentRepository.getReferenceById(departmentId);
             ur.setDepartment(dept);
         }
         userRoleRepository.save(ur);

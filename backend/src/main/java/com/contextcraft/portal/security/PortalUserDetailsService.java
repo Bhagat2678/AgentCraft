@@ -11,6 +11,8 @@ import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.stereotype.Service;
 
+import org.springframework.transaction.annotation.Transactional;
+
 import java.util.List;
 import java.util.UUID;
 
@@ -19,6 +21,7 @@ import java.util.UUID;
  * or a userId string (used by the JWT filter after token parsing).
  */
 @Service
+@Transactional(readOnly = true)
 public class PortalUserDetailsService implements UserDetailsService {
 
     private final UserPhoneRepository userPhoneRepository;
