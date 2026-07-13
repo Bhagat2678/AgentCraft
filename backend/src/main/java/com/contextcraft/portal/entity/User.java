@@ -21,6 +21,9 @@ public class User {
     @Column(name = "display_name", length = 255)
     private String displayName;
 
+    @Column(length = 100)
+    private String username;
+
     @Column(length = 255)
     private String email;
 
@@ -57,6 +60,8 @@ public class User {
     public void setBusiness(Business business) { this.business = business; }
     public String getDisplayName() { return displayName; }
     public void setDisplayName(String displayName) { this.displayName = displayName; }
+    public String getUsername() { return username; }
+    public void setUsername(String username) { this.username = username; }
     public String getEmail() { return email; }
     public void setEmail(String email) { this.email = email; }
     public String getStatus() { return status; }

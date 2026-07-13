@@ -47,9 +47,7 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                // Meta webhook verification (GET) and event reception (POST)
-                .requestMatchers("/api/v1/webhook").permitAll()
-                // Telegram webhook (POST)
+                // Telegram webhook endpoint (POST)
                 .requestMatchers("/api/v1/telegram/webhook").permitAll()
                 // Auth endpoint — issues JWT after OTP/phone verification
                 .requestMatchers("/api/v1/auth/**").permitAll()

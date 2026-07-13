@@ -20,7 +20,6 @@ public class CreateBusinessRequest {
     private String industry;
     private String location;
     private String basePolicies;
-    private String wabaPhoneId;
 
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
@@ -32,6 +31,4 @@ public class CreateBusinessRequest {
     public void setLocation(String location) { this.location = location; }
     public String getBasePolicies() { return basePolicies; }
     public void setBasePolicies(String basePolicies) { this.basePolicies = basePolicies; }
-    public String getWabaPhoneId() { return wabaPhoneId; }
-    public void setWabaPhoneId(String wabaPhoneId) { this.wabaPhoneId = wabaPhoneId; }
 }

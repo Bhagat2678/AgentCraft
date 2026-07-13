@@ -36,8 +36,9 @@ public class Business {
     @Column(columnDefinition = "TEXT")
     private String basePolicies;
 
-    @Column(length = 100)
-    private String wabaPhoneId;
+    /** Portal login password (plain-text for now; BCrypt-hashed in Phase 4). */
+    @Column(name = "portal_password", length = 255)
+    private String portalPassword;
 
     @Column(name = "owner_user_id")
     private UUID ownerUserId;
@@ -86,8 +87,8 @@ public class Business {
     public void setWorkingHours(Map<String, String> workingHours) { this.workingHours = workingHours; }
     public String getBasePolicies() { return basePolicies; }
     public void setBasePolicies(String basePolicies) { this.basePolicies = basePolicies; }
-    public String getWabaPhoneId() { return wabaPhoneId; }
-    public void setWabaPhoneId(String wabaPhoneId) { this.wabaPhoneId = wabaPhoneId; }
+    public String getPortalPassword() { return portalPassword; }
+    public void setPortalPassword(String portalPassword) { this.portalPassword = portalPassword; }
     public UUID getOwnerUserId() { return ownerUserId; }
     public void setOwnerUserId(UUID ownerUserId) { this.ownerUserId = ownerUserId; }
     public OffsetDateTime getCreatedAt() { return createdAt; }

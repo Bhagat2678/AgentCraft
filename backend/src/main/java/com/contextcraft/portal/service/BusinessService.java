@@ -2,9 +2,11 @@ package com.contextcraft.portal.service;
 
 import com.contextcraft.portal.entity.Business;
 import com.contextcraft.portal.repository.BusinessRepository;
+import com.contextcraft.portal.repository.UserRoleRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -15,9 +17,12 @@ import java.util.UUID;
 public class BusinessService {
 
     private final BusinessRepository businessRepository;
+    private final UserRoleRepository userRoleRepository;
 
-    public BusinessService(BusinessRepository businessRepository) {
+    public BusinessService(BusinessRepository businessRepository,
+                           UserRoleRepository userRoleRepository) {
         this.businessRepository = businessRepository;
+        this.userRoleRepository = userRoleRepository;
     }
 
     @Transactional(readOnly = true)
@@ -27,14 +32,13 @@ public class BusinessService {
     }
 
     public Business create(String name, String type, String industry, String location,
-                           String basePolicies, String wabaPhoneId) {
+                           String basePolicies) {
         Business b = new Business();
         b.setName(name);
         b.setType(type);
         b.setIndustry(industry);
         b.setLocation(location);
         b.setBasePolicies(basePolicies);
-        b.setWabaPhoneId(wabaPhoneId);
         return businessRepository.save(b);
     }
 
@@ -52,6 +56,18 @@ public class BusinessService {
         Business b = getById(businessId);
         b.setOwnerUserId(ownerUserId);
         businessRepository.save(b);
+    }
+
+    /**
+     * Returns all businesses the given user is linked to via user_roles.
+     * Used by the /switch multi-portal command.
+     */
+    @Transactional(readOnly = true)
+    public List<Business> findByUserId(UUID userId) {
+        return userRoleRepository.findByUserId(userId).stream()
+                .map(ur -> ur.getRole().getBusiness())
+                .distinct()
+                .toList();
     }
 
     /** Soft-delete: sets deleted_at timestamp. */

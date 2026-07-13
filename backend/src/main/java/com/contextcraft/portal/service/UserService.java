@@ -206,6 +206,32 @@ public class UserService {
         userRepository.save(user);
     }
 
+    /**
+     * Authenticates a user by email + business name + portal password.
+     * Looks up the user by email field (stored on User) and validates against the business name.
+     * Password hashing should be added in Phase 4 (Security hardening).
+     *
+     * @throws RuntimeException if the credentials are invalid
+     */
+    @Transactional(readOnly = true)
+    public User loginByEmailAndPortalName(String email, String businessName, String password) {
+        // Find user by email within the named business
+        User user = userRepository.findByEmailAndBusinessName(email, businessName)
+                .orElseThrow(() -> new RuntimeException(
+                        "No account found for email '" + email + "' in portal '" + businessName + "'"));
+        if (!"ACTIVE".equals(user.getStatus())) {
+            throw new RuntimeException("Account is not active. Please contact your admin.");
+        }
+        // TODO Phase 4: validate BCrypt password hash (user.getPasswordHash())
+        // For now: password is verified as matching the portal password stored on Business
+        // (To be replaced with proper BCrypt verification in Phase 4)
+        if (user.getBusiness().getPortalPassword() != null &&
+                !user.getBusiness().getPortalPassword().equals(password)) {
+            throw new RuntimeException("Invalid password.");
+        }
+        return user;
+    }
+
     @Transactional(readOnly = true)
     public List<User> listByBusiness(UUID businessId) {
         return userRepository.findByBusinessId(businessId);

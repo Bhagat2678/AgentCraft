@@ -1,6 +1,7 @@
 package com.contextcraft.portal.config;
 
 import com.contextcraft.portal.scheduler.AnalyticsSnapshotJob;
+import com.contextcraft.portal.scheduler.SessionTimeoutJob;
 import com.contextcraft.portal.scheduler.TaskReminderJob;
 import org.quartz.*;
 import org.quartz.spi.TriggerFiredBundle;
@@ -50,7 +51,7 @@ public class QuartzConfig {
     public JobDetail taskReminderJobDetail() {
         return JobBuilder.newJob(TaskReminderJob.class)
                 .withIdentity("taskReminderJob", "reminders")
-                .withDescription("Daily task overdue/due-soon reminder via WhatsApp")
+                .withDescription("Daily task overdue/due-soon reminder via Telegram")
                 .storeDurably()
                 .build();
     }
@@ -83,6 +84,26 @@ public class QuartzConfig {
                 .withIdentity("analyticsSnapshotTrigger", "analytics")
                 .withDescription("Fires every Sunday at midnight")
                 .withSchedule(CronScheduleBuilder.cronSchedule("0 0 0 ? * SUN"))
+                .build();
+    }
+    // ─── Session Timeout Nudge ─────────────────────────────────────────────────
+
+    @Bean
+    public JobDetail sessionTimeoutJobDetail() {
+        return JobBuilder.newJob(SessionTimeoutJob.class)
+                .withIdentity("sessionTimeoutJob", "sessions")
+                .withDescription("Nudges idle mid-flow sessions every 30 minutes")
+                .storeDurably()
+                .build();
+    }
+
+    @Bean
+    public Trigger sessionTimeoutTrigger(JobDetail sessionTimeoutJobDetail) {
+        return TriggerBuilder.newTrigger()
+                .forJob(sessionTimeoutJobDetail)
+                .withIdentity("sessionTimeoutTrigger", "sessions")
+                .withDescription("Fires every 30 minutes")
+                .withSchedule(CronScheduleBuilder.cronSchedule("0 0/30 * * * ?"))
                 .build();
     }
 }

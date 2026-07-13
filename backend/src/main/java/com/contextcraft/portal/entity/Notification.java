@@ -28,7 +28,7 @@ public class Notification {
     private Map<String, Object> payload;
 
     @Column(length = 20)
-    private String channel = "WHATSAPP";
+    private String channel = "TELEGRAM";
 
     @Column(length = 20)
     private String status = "PENDING"; // PENDING, SENT, FAILED, CANCELLED

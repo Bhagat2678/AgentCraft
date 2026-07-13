@@ -118,7 +118,7 @@ public class TelegramWebhookController {
                 Long fileSize = doc.has("file_size") ? doc.get("file_size").asLong() : 0L;
 
                 log.info("Incoming Telegram document chatId={} user={} fileName={} size={}", chatId, username, fileName, fileSize);
-                conversationFsm.processMedia(fsmKey, fileId, fileName, mimeType, fileSize, messageId);
+                conversationFsm.processAttachment(fsmKey, fileId, fileName, mimeType, fileSize, null);
                 return;
             }
 
@@ -133,7 +133,7 @@ public class TelegramWebhookController {
                     Long fileSize = lastPhoto.has("file_size") ? lastPhoto.get("file_size").asLong() : 0L;
 
                     log.info("Incoming Telegram photo chatId={} user={} fileId={} size={}", chatId, username, fileId, fileSize);
-                    conversationFsm.processMedia(fsmKey, fileId, fileName, mimeType, fileSize, messageId);
+                    conversationFsm.processAttachment(fsmKey, fileId, fileName, mimeType, fileSize, null);
                     return;
                 }
             }
@@ -178,7 +178,7 @@ public class TelegramWebhookController {
 
             log.info("Incoming Telegram callback chatId={} data={}", chatId, data);
 
-            conversationFsm.process(fsmKey, data, callbackId);
+            conversationFsm.process(fsmKey, data, callbackId, null);
 
             // Answer callback query to dismiss the loading animation in Telegram
             telegramChatAdapter.answerCallbackQuery(callbackId, null);

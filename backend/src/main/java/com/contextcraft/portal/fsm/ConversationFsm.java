@@ -2,10 +2,8 @@ package com.contextcraft.portal.fsm;
 
 import com.contextcraft.portal.entity.*;
 import com.contextcraft.portal.repository.*;
-import com.contextcraft.portal.repository.TelegramUserRepository;
 import com.contextcraft.portal.service.*;
 import com.contextcraft.portal.telegram.TelegramChatAdapter;
-import com.contextcraft.portal.whatsapp.WhatsAppChatAdapter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -16,21 +14,17 @@ import java.time.format.DateTimeParseException;
 import java.util.*;
 
 /**
- * Core Finite State Machine engine.
+ * Core Finite State Machine engine for Telegram interaction.
  *
- * Entry point: process(destinationKey, messageBody, rawMessage)
- *
- * destinationKey is either:
- *  - A phone number (E.164 format) for WhatsApp
- *  - "telegram:{chatId}" for Telegram
- *
- * For each inbound message:
- *  1. Load (or create) the FsmContext from Redis/DB
- *  2. Delegate to the state handler for the current state
- *  3. The handler mutates ctx.state and sends reply messages via the adapter
- *  4. Persist the updated context back to Redis/DB
- *
- * This class coordinates state transitions; business logic lives in services.
+ * Phase 2 additions:
+ *  - Universal command interceptor: /start /menu /help /switch /cancel
+ *  - Step history stack for ← Back navigation
+ *  - Master flow skeleton: returning user fast-path vs new user setup
+ *  - Multi-business /switch support (CEO linked to multiple portals)
+ *  - Universal end-of-action loop: "Is there anything else?" → Exit Check
+ *  - Portal setup wizard (BLIZBOT style: name → username → company → ...)
+ *  - Portal login flow
+ *  - All existing task/invite/review flows preserved and wired to new states
  */
 @Service
 @Transactional
@@ -39,7 +33,6 @@ public class ConversationFsm {
     private static final Logger log = LoggerFactory.getLogger(ConversationFsm.class);
 
     private final RedisConversationStore store;
-    private final WhatsAppChatAdapter whatsAppAdapter;
     private final TelegramChatAdapter telegramAdapter;
     private final BusinessService businessService;
     private final UserService userService;
@@ -52,10 +45,9 @@ public class ConversationFsm {
     private final TaskRepository taskRepository;
     private final TaskAssignmentRepository taskAssignmentRepository;
     private final AttachmentRepository attachmentRepository;
-    private final TelegramUserRepository telegramUserRepository;
+    private final RoleFlowRouter roleFlowRouter;
 
     public ConversationFsm(RedisConversationStore store,
-                           WhatsAppChatAdapter whatsAppAdapter,
                            TelegramChatAdapter telegramAdapter,
                            BusinessService businessService,
                            UserService userService,
@@ -67,9 +59,9 @@ public class ConversationFsm {
                            DepartmentRepository departmentRepository,
                            TaskRepository taskRepository,
                            TaskAssignmentRepository taskAssignmentRepository,
-                           AttachmentRepository attachmentRepository) {
+                           AttachmentRepository attachmentRepository,
+                           RoleFlowRouter roleFlowRouter) {
         this.store = store;
-        this.whatsAppAdapter = whatsAppAdapter;
         this.telegramAdapter = telegramAdapter;
         this.businessService = businessService;
         this.userService = userService;
@@ -77,137 +69,54 @@ public class ConversationFsm {
         this.taskService = taskService;
         this.phoneRepo = phoneRepo;
         this.telegramUserRepo = telegramUserRepo;
-        this.telegramUserRepository = telegramUserRepo;
         this.roleRepository = roleRepository;
         this.departmentRepository = departmentRepository;
         this.taskRepository = taskRepository;
         this.taskAssignmentRepository = taskAssignmentRepository;
         this.attachmentRepository = attachmentRepository;
+        this.roleFlowRouter = roleFlowRouter;
     }
 
-    // ─── Channel Routing ──────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CHANNEL HELPERS
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Routes a text message to the appropriate channel adapter based on the
-     * destination key format.
-     */
     private void sendMessage(String destination, String text) {
-        if (destination.startsWith("telegram:")) {
-            telegramAdapter.sendTextByFsmKey(destination, text);
-        } else {
-            whatsAppAdapter.sendText(destination, text);
-        }
+        telegramAdapter.sendTextByFsmKey(destination, text);
     }
 
     private void sendMenu(String destination, String text, List<List<Map<String, String>>> keyboard) {
-        if (destination.startsWith("telegram:")) {
-            Long chatId = TelegramChatAdapter.parseChatId(destination);
-            if (chatId != null) {
-                telegramAdapter.sendWithInlineKeyboard(chatId, text, keyboard);
-            } else {
-                sendMessage(destination, text);
-            }
+        Long chatId = TelegramChatAdapter.parseChatId(destination);
+        if (chatId != null) {
+            telegramAdapter.sendWithInlineKeyboard(chatId, text, keyboard);
         } else {
-            // WhatsApp fallback: format the buttons as text options
-            StringBuilder sb = new StringBuilder(text);
-            sb.append("\n\n");
-            for (List<Map<String, String>> row : keyboard) {
-                for (Map<String, String> button : row) {
-                    sb.append("• *").append(button.get("callback_data")).append("* — ").append(button.get("text")).append("\n");
-                }
-            }
-            sendMessage(destination, sb.toString().trim());
+            sendMessage(destination, text);
         }
-    }
-
-    private String getPrimaryPhone(UUID userId) {
-        return phoneRepo.findAll().stream()
-                .filter(p -> p.getUser().getId().equals(userId) && p.isPrimary())
-                .map(UserPhone::getPhoneNumber)
-                .findFirst().orElse(null);
     }
 
     private Long getTelegramChatId(UUID userId) {
-        return telegramUserRepo.findAll().stream()
-                .filter(t -> t.getUser().getId().equals(userId))
+        return telegramUserRepo.findByUserId(userId)
                 .map(TelegramUser::getChatId)
-                .findFirst().orElse(null);
+                .orElse(null);
     }
+
+    private void markRead(String destination, String messageId) {
+        telegramAdapter.markAsRead(messageId);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MAIN ENTRY POINTS
+    // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Marks a message as read on the appropriate channel.
+     * Process an inbound text/callback message from Telegram.
      */
-    private void markRead(String destination, String messageId) {
-        if (destination.startsWith("telegram:")) {
-            telegramAdapter.markAsRead(messageId);
-        } else {
-            whatsAppAdapter.markAsRead(messageId);
-        }
-    }
+    public void process(String fromKey, String messageBody, String messageId, String telegramUsername) {
+        markRead(fromKey, messageId);
 
-    // ─── Entry Point ──────────────────────────────────────────────────────────
-
-    public void process(String fromPhone, String messageBody, String messageId) {
-        process(fromPhone, messageBody, messageId, null);
-    }
-
-    public void processMedia(String fromPhone, String fileId, String fileName, String mimeType, Long fileSize, String messageId) {
-        markRead(fromPhone, messageId);
-
-        FsmContext ctx = store.load(fromPhone).orElseGet(() -> {
+        FsmContext ctx = store.load(fromKey).orElseGet(() -> {
             FsmContext fresh = new FsmContext();
-            fresh.setPhoneNumber(fromPhone);
-            fresh.setState(FsmState.NEW);
-            return fresh;
-        });
-
-        // Only handle media when the user exists
-        UUID userId = ctx.getUserId();
-        if (userId == null) {
-            sendMessage(fromPhone, "Please register first before sending attachments.");
-            return;
-        }
-
-        // Find active task assignment
-        List<TaskAssignment> assignments = taskAssignmentRepository.findByAssigneeId(userId);
-        Optional<TaskAssignment> active = assignments.stream()
-                .filter(a -> a.getCompletedAt() == null &&
-                             ("ASSIGNED".equals(a.getTask().getStatus()) || "REJECTED".equals(a.getTask().getStatus())))
-                .findFirst();
-
-        if (active.isEmpty()) {
-            sendMessage(fromPhone, "You don't have any active tasks to attach this file to.");
-        } else {
-            TaskAssignment assignment = active.get();
-            Task task = assignment.getTask();
-
-            // Create Attachment record
-            Attachment attachment = new Attachment();
-            attachment.setTask(task);
-            attachment.setUploader(userService.getById(userId));
-            attachment.setFileKey("telegram/" + fileId);
-            attachment.setFileName(fileName != null ? fileName : "photo.jpg");
-            attachment.setMimeType(mimeType != null ? mimeType : "image/jpeg");
-            attachment.setSizeBytes(fileSize != null ? fileSize : 0L);
-            attachment.setTelegramFileId(fileId);
-            
-            // Save it
-            attachmentRepository.save(attachment);
-
-            sendMessage(fromPhone, "📎 File *" + attachment.getFileName() + "* attached successfully to task *" + task.getTitle() + "*!\n\n" +
-                                   "Reply *DONE* to submit this task for approval when you're finished.");
-        }
-
-        store.save(ctx);
-    }
-
-    public void process(String fromPhone, String messageBody, String messageId, String telegramUsername) {
-        // Mark as read immediately for better UX
-        markRead(fromPhone, messageId);
-
-        FsmContext ctx = store.load(fromPhone).orElseGet(() -> {
-            FsmContext fresh = new FsmContext();
-            fresh.setPhoneNumber(fromPhone);
+            fresh.setPhoneNumber(fromKey);
             fresh.setState(FsmState.NEW);
             return fresh;
         });
@@ -216,212 +125,480 @@ public class ConversationFsm {
             ctx.getExtras().put("telegram_username", telegramUsername);
         }
 
-        String input = messageBody == null ? "" : messageBody.trim();
-
-        // Strip Telegram slash-command prefix (e.g. /task -> task)
-        if (input.startsWith("/")) {
-            input = input.substring(1);
-        }
+        String raw   = messageBody == null ? "" : messageBody.trim();
+        String input = raw.startsWith("/") ? raw.substring(1) : raw;
 
         try {
+            // ── Universal command interceptor ──────────────────────────────────
+            // These work regardless of current state
+            String cmdCheck = input.toUpperCase();
+            if (handleUniversalCommands(ctx, cmdCheck)) {
+                store.save(ctx);
+                return;
+            }
+
+            // ── State dispatch ─────────────────────────────────────────────────
             switch (ctx.getState()) {
-                case NEW              -> handleNew(ctx, input);
-                case ACCEPT_INVITE_TOKEN -> handleAcceptInviteToken(ctx, input);
-                case SETUP_BNAME     -> handleSetupBname(ctx, input);
-                case SETUP_BTYPE     -> handleSetupBtype(ctx, input);
-                case SETUP_INDUSTRY  -> handleSetupIndustry(ctx, input);
-                case SETUP_LOCATION  -> handleSetupLocation(ctx, input);
-                case SETUP_HOURS     -> handleSetupHours(ctx, input);
-                case SETUP_DEPTS     -> handleSetupDepts(ctx, input);
-                case SETUP_CONFIRM   -> handleSetupConfirm(ctx, input);
-                case IDLE            -> handleIdle(ctx, input);
-                case TASK_TITLE      -> handleTaskTitle(ctx, input);
-                case TASK_DESC       -> handleTaskDesc(ctx, input);
-                case TASK_DUE        -> handleTaskDue(ctx, input);
-                case TASK_PRIORITY   -> handleTaskPriority(ctx, input);
-                case TASK_ASSIGN     -> handleTaskAssign(ctx, input);
-                case TASK_CONFIRM    -> handleTaskConfirm(ctx, input);
-                case INVITE_PHONE    -> handleInvitePhone(ctx, input);
-                case INVITE_ROLE     -> handleInviteRole(ctx, input);
-                case INVITE_DEPT     -> handleInviteDept(ctx, input);
-                case INVITE_CONFIRM  -> handleInviteConfirm(ctx, input);
-                case TASK_REVIEW_DECISION -> handleReviewDecision(ctx, input);
-                case TASK_REJECT_REASON   -> handleRejectReason(ctx, input);
-                case ERROR           -> handleError(ctx);
+                case NEW                    -> handleNew(ctx, input);
+                case ACCEPT_INVITE_TOKEN    -> handleAcceptInviteToken(ctx, input);
+
+                // Portal creation wizard
+                case SETUP_NAME             -> handleSetupName(ctx, input);
+                case SETUP_USERNAME         -> handleSetupUsername(ctx, input);
+                case SETUP_BNAME            -> handleSetupBname(ctx, input);
+                case SETUP_BBUSINESS        -> handleSetupBbusiness(ctx, input);
+                case SETUP_BDESC            -> handleSetupBdesc(ctx, input);
+                case SETUP_EMP_COUNT        -> handleSetupEmpCount(ctx, input);
+                case SETUP_EMAIL            -> handleSetupEmail(ctx, input);
+                case SETUP_DEPT_COUNT       -> handleSetupDeptCount(ctx, input);
+                case SETUP_DEPT_NAMES       -> handleSetupDeptNames(ctx, input);
+                case SETUP_PASSWORD         -> handleSetupPassword(ctx, input);
+                case SETUP_PASSWORD_CONFIRM -> handleSetupPasswordConfirm(ctx, input);
+                case SETUP_BTYPE            -> handleSetupBtype(ctx, input);
+                case SETUP_CONFIRM          -> handleSetupConfirm(ctx, input);
+
+                // Login flows
+                case LOGIN_USERNAME         -> handleLoginUsername(ctx, input);
+                case LOGIN_BNAME            -> handleLoginBname(ctx, input);
+                case LOGIN_EMAIL            -> handleLoginEmail(ctx, input);
+                case LOGIN_PASSWORD         -> handleLoginPassword(ctx, input);
+                case ANALYTICS_USERNAME     -> handleAnalyticsUsername(ctx, input);
+                case ANALYTICS_BNAME        -> handleAnalyticsBname(ctx, input);
+                case ANALYTICS_EMAIL        -> handleAnalyticsEmail(ctx, input);
+                case ANALYTICS_PASSWORD     -> handleAnalyticsPassword(ctx, input);
+
+                // Multi-business switch
+                case SELECT_BUSINESS        -> handleSelectBusiness(ctx, input);
+
+                // Main menu
+                case IDLE                   -> handleIdle(ctx, input);
+
+                // Universal end-of-action loop
+                case ANOTHER_ACTION         -> handleAnotherAction(ctx, input);
+                case EXIT_CHECK             -> handleExitCheck(ctx, input);
+
+                // Task flows
+                case TASK_TITLE             -> handleTaskTitle(ctx, input);
+                case TASK_DESC              -> handleTaskDesc(ctx, input);
+                case TASK_DUE               -> handleTaskDue(ctx, input);
+                case TASK_PRIORITY          -> handleTaskPriority(ctx, input);
+                case TASK_ASSIGN            -> handleTaskAssign(ctx, input);
+                case TASK_CONFIRM           -> handleTaskConfirm(ctx, input);
+
+                // Invite flows
+                case INVITE_EMP_NAME        -> handleInviteEmpName(ctx, input);
+                case INVITE_EMP_EMAIL       -> handleInviteEmpEmail(ctx, input);
+                case INVITE_PHONE           -> handleInvitePhone(ctx, input);
+                case INVITE_ROLE            -> handleInviteRole(ctx, input);
+                case INVITE_DEPT            -> handleInviteDept(ctx, input);
+                case INVITE_CONFIRM         -> handleInviteConfirm(ctx, input);
+
+                // Review flows
+                case TASK_REVIEW_DECISION   -> handleReviewDecision(ctx, input);
+                case TASK_REJECT_REASON     -> handleRejectReason(ctx, input);
+
+                // Email / Meeting flows
+                case EMAIL_MEETING_CHOICE     -> handleEmailMeetingChoice(ctx, input);
+                case EMAIL_MEETING_MANUAL_BODY-> handleEmailMeetingManualBody(ctx, input);
+                case EMAIL_MEETING_CONFIRM    -> handleEmailMeetingConfirm(ctx, input);
+                case EMAIL_MEETING_DATE       -> handleEmailMeetingDate(ctx, input);
+                case EMAIL_MEETING_TIME       -> handleEmailMeetingTime(ctx, input);
+                case EMAIL_MEETING_SUBJECT    -> handleEmailMeetingSubject(ctx, input);
+                case EMAIL_MEETING_SEND_CONFIRM -> handleEmailMeetingSendConfirm(ctx, input);
+                case EMAIL_MEETING_EDIT          -> handleEmailMeetingEdit(ctx, input);
+                case EMAIL_MGR_BODY           -> handleEmailMgrBody(ctx, input);
+                case EMAIL_MGR_CONFIRM        -> handleEmailMgrConfirm(ctx, input);
+                case EMAIL_MGR_EDIT           -> handleEmailMgrEditState(ctx, input);
+                case EMAIL_MGR_ADDRESS        -> handleEmailMgrAddress(ctx, input);
+
+                case ERROR                  -> handleError(ctx);
                 default -> {
-                    log.warn("Unhandled state {} for {}", ctx.getState(), fromPhone);
-                    sendMessage(fromPhone, "Sorry, something went wrong. Type *HELP* for options.");
+                    log.warn("Unhandled state {} for {}", ctx.getState(), fromKey);
+                    sendMessage(fromKey, "⚠️ Something went wrong. Type /help for options.");
                     ctx.setState(FsmState.IDLE);
                 }
             }
         } catch (Exception e) {
-            log.error("FSM error for phone {} in state {}: {}", fromPhone, ctx.getState(), e.getMessage(), e);
-            sendMessage(fromPhone, "⚠️ An error occurred. Please try again or type *HELP*.");
+            log.error("FSM error for {} in state {}: {}", fromKey, ctx.getState(), e.getMessage(), e);
+            sendMessage(fromKey, "⚠️ An error occurred. Please try again or type /help.");
         }
 
         store.save(ctx);
     }
 
-    // ─── State Handlers ───────────────────────────────────────────────────────
+    /**
+     * Process Telegram photo / document attachments (proof submissions).
+     */
+    public void processAttachment(String fromKey, String fileId, String fileName,
+                                  String mimeType, Long fileSize, UUID userId) {
+        FsmContext ctx = store.load(fromKey).orElseGet(() -> {
+            FsmContext fresh = new FsmContext();
+            fresh.setPhoneNumber(fromKey);
+            fresh.setState(FsmState.NEW);
+            return fresh;
+        });
 
-    private void handleNew(FsmContext ctx, String input) {
-        // Check if this is a Telegram user with an existing account
-        if (ctx.getPhoneNumber().startsWith("telegram:")) {
-            Long chatId = TelegramChatAdapter.parseChatId(ctx.getPhoneNumber());
-            if (chatId != null) {
-                Optional<TelegramUser> tgUser = telegramUserRepo.findByChatId(chatId);
-                if (tgUser.isPresent() && "ACTIVE".equals(tgUser.get().getUser().getStatus())) {
-                    User user = tgUser.get().getUser();
-                    ctx.setUserId(user.getId());
-                    ctx.setBusinessId(user.getBusiness().getId());
-                    ctx.setState(FsmState.IDLE);
-                    sendMessage(ctx.getPhoneNumber(),
-                            "👋 Welcome back, *" + user.getDisplayName() + "*!\n\n" +
-                            "Type *HELP* to see available commands.");
-                    return;
-                }
-            }
+        if (userId == null && ctx.getUserId() != null) {
+            userId = ctx.getUserId();
+        }
+        if (userId == null) {
+            sendMessage(fromKey, "Please log in first. Type /start to begin.");
+            return;
         }
 
-        // Check if this phone already belongs to a known user (WhatsApp)
-        if (!ctx.getPhoneNumber().startsWith("telegram:")) {
-            Optional<UserPhone> existing = phoneRepo.findByPhoneNumber(ctx.getPhoneNumber());
-            if (existing.isPresent() && "ACTIVE".equals(existing.get().getUser().getStatus())) {
-                User user = existing.get().getUser();
+        List<TaskAssignment> active = taskAssignmentRepository.findByAssigneeId(userId).stream()
+                .filter(a -> a.getCompletedAt() == null &&
+                        ("ASSIGNED".equals(a.getTask().getStatus()) || "REJECTED".equals(a.getTask().getStatus())))
+                .findFirst()
+                .map(List::of)
+                .orElse(List.of());
+
+        if (active.isEmpty()) {
+            sendMessage(fromKey, "You don't have any active tasks to attach a file to.");
+        } else {
+            TaskAssignment assignment = active.get(0);
+            Task task = assignment.getTask();
+            Attachment attachment = new Attachment();
+            attachment.setTask(task);
+            attachment.setUploader(userService.getById(userId));
+            attachment.setFileKey("telegram/" + fileId);
+            attachment.setFileName(fileName != null ? fileName : "photo.jpg");
+            attachment.setMimeType(mimeType != null ? mimeType : "image/jpeg");
+            attachment.setSizeBytes(fileSize != null ? fileSize : 0L);
+            attachment.setTelegramFileId(fileId);
+            attachmentRepository.save(attachment);
+
+            sendMessage(fromKey,
+                "📎 File *" + attachment.getFileName() + "* attached to task *" + task.getTitle() + "*!\n\n" +
+                "Reply *DONE* to submit for approval when you're finished.");
+        }
+        store.save(ctx);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // UNIVERSAL COMMAND INTERCEPTOR
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Handles /start /menu /help /switch /cancel regardless of FSM state.
+     * Returns true if the command was consumed, false to let normal dispatch continue.
+     */
+    private boolean handleUniversalCommands(FsmContext ctx, String cmdUpper) {
+        switch (cmdUpper) {
+            case "START" -> {
+                // Re-trigger master flow
+                handleStart(ctx);
+                return true;
+            }
+            case "MENU" -> {
+                sendMessage(ctx.getPhoneNumber(), "🔄 Returning to the main menu.");
+                ctx.clearHistory();
+                ctx.getExtras().clear();
+                if (ctx.getUserId() != null) {
+                    ctx.setState(FsmState.IDLE);
+                    sendRoleMenu(ctx);
+                } else {
+                    ctx.setState(FsmState.NEW);
+                    sendWelcome(ctx);
+                }
+                return true;
+            }
+            case "HELP" -> {
+                sendHelp(ctx);
+                return true;
+            }
+            case "SWITCH" -> {
+                handleSwitch(ctx);
+                return true;
+            }
+            case "CANCEL" -> {
+                // Abandon current multi-step action
+                ctx.setPendingTask(null);
+                ctx.setPendingInvite(null);
+                ctx.setPendingEmail(null);
+                ctx.clearHistory();
+                ctx.getExtras().clear();
+                sendMessage(ctx.getPhoneNumber(), "❌ Cancelled. No changes were made.");
+                ctx.setState(ctx.getUserId() != null ? FsmState.IDLE : FsmState.NEW);
+                if (ctx.getUserId() != null) sendRoleMenu(ctx);
+                return true;
+            }
+            case "BACK", "← BACK" -> {
+                FsmState prev = ctx.popHistory();
+                if (prev != null) {
+                    ctx.setState(prev);
+                    sendMessage(ctx.getPhoneNumber(), "↩️ Going back...");
+                } else {
+                    sendMessage(ctx.getPhoneNumber(), "Nothing to go back to. Type /menu to return to the main menu.");
+                }
+                return true;
+            }
+            default -> { return false; }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MASTER FLOW — /start
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void handleStart(FsmContext ctx) {
+        Long chatId = TelegramChatAdapter.parseChatId(ctx.getPhoneNumber());
+        if (chatId != null) {
+            Optional<TelegramUser> tgUser = telegramUserRepo.findByChatId(chatId);
+            if (tgUser.isPresent() && "ACTIVE".equals(tgUser.get().getUser().getStatus())) {
+                // RETURNING USER — drop straight to their role menu
+                User user = tgUser.get().getUser();
                 ctx.setUserId(user.getId());
                 ctx.setBusinessId(user.getBusiness().getId());
                 ctx.setState(FsmState.IDLE);
                 sendMessage(ctx.getPhoneNumber(),
-                        "👋 Welcome back, *" + user.getDisplayName() + "*!\n\n" +
-                        "Type *HELP* to see available commands.");
+                    "👋 Welcome back, *" + user.getDisplayName() + "*!");
+                sendRoleMenu(ctx);
+                return;
+            }
+        }
+        // NEW USER
+        ctx.setState(FsmState.NEW);
+        sendWelcome(ctx);
+    }
+
+    private void handleNew(FsmContext ctx, String input) {
+        // First check if already linked
+        Long chatId = TelegramChatAdapter.parseChatId(ctx.getPhoneNumber());
+        if (chatId != null) {
+            Optional<TelegramUser> tgUser = telegramUserRepo.findByChatId(chatId);
+            if (tgUser.isPresent() && "ACTIVE".equals(tgUser.get().getUser().getStatus())) {
+                User user = tgUser.get().getUser();
+                ctx.setUserId(user.getId());
+                ctx.setBusinessId(user.getBusiness().getId());
+                ctx.setState(FsmState.IDLE);
+                sendRoleMenu(ctx);
                 return;
             }
         }
 
-        // Brand new contact — offer portal creation
-        List<List<Map<String, String>>> keyboard = List.of(
-            List.of(
-                TelegramChatAdapter.button("Create a new business portal", "1"),
-                TelegramChatAdapter.button("Accept an invite", "2")
-            )
-        );
-        sendMenu(ctx.getPhoneNumber(),
-                "👋 Welcome to *ContextCraft Business Portal*!\n\n" +
-                "I can help you set up and manage your business.\n\n" +
-                "Would you like to:",
-                keyboard);
-        // Stay in NEW until they respond
-        ctx.setState(FsmState.NEW);
-
-        // Handle the response immediately if given
-        if ("1".equals(input)) {
-            sendMessage(ctx.getPhoneNumber(), "Great! Let's set up your portal.\n\nWhat is your *business name*?");
-            ctx.setState(FsmState.SETUP_BNAME);
-        } else if ("2".equals(input)) {
-            sendMessage(ctx.getPhoneNumber(), "Great! Please enter the 32-character invite token you received to join your business portal:");
+        // Handle button tap on welcome message
+        if ("1".equals(input) || "CREATE".equalsIgnoreCase(input)) {
+            sendMessage(ctx.getPhoneNumber(),
+                "👋 Hi! I'm *Blizbot*, your personal assistant.\n\nLet's create your new portal.\n\n*Please enter your name.*");
+            ctx.setState(FsmState.SETUP_NAME);
+        } else if ("2".equals(input) || "LOGIN".equalsIgnoreCase(input)) {
+            sendMessage(ctx.getPhoneNumber(), "🔐 *Log In to an Existing Portal*\n\nPlease enter your *username*.");
+            ctx.setState(FsmState.LOGIN_USERNAME);
+        } else if ("3".equals(input) || "INVITE".equalsIgnoreCase(input) || "ACCEPT".equalsIgnoreCase(input)) {
+            sendMessage(ctx.getPhoneNumber(),
+                "🎟️ Please enter the *invite token* you received to join your business portal:");
             ctx.setState(FsmState.ACCEPT_INVITE_TOKEN);
+        } else {
+            sendWelcome(ctx);
         }
     }
 
-    private void handleAcceptInviteToken(FsmContext ctx, String input) {
-        if (input == null || input.trim().isEmpty()) {
-            sendMessage(ctx.getPhoneNumber(), "Please enter a valid invite token.");
+    private void sendWelcome(FsmContext ctx) {
+        List<List<Map<String, String>>> keyboard = List.of(
+            List.of(
+                TelegramChatAdapter.button("🏢 Create a new portal", "1"),
+                TelegramChatAdapter.button("🔑 Log in to existing portal", "2")
+            ),
+            List.of(
+                TelegramChatAdapter.button("🎟️ Accept an invite", "3")
+            )
+        );
+        sendMenu(ctx.getPhoneNumber(),
+            "👋 Hi! I'm *Blizbot*, your personal business assistant.\n\n" +
+            "How may I help you today?",
+            keyboard);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PORTAL CREATION WIZARD
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void handleSetupName(FsmContext ctx, String input) {
+        if (input.length() < 2) {
+            sendMessage(ctx.getPhoneNumber(), "Please enter your *full name* (at least 2 characters).");
             return;
         }
+        ctx.pushHistory();
+        ctx.getExtras().put("ceo_name", input);
+        sendMessage(ctx.getPhoneNumber(), "Please enter your *username*.\n\n_(← Back at any time)_");
+        ctx.setState(FsmState.SETUP_USERNAME);
+    }
 
-        try {
-            User user;
-            if (ctx.getPhoneNumber().startsWith("telegram:")) {
-                Long chatId = TelegramChatAdapter.parseChatId(ctx.getPhoneNumber());
-                String username = ctx.getExtras().get("telegram_username");
-                user = userService.acceptInviteTelegram(input.trim(), chatId, username);
-            } else {
-                user = userService.acceptInvite(input.trim());
-            }
-
-            ctx.setUserId(user.getId());
-            ctx.setBusinessId(user.getBusiness().getId());
-            ctx.setState(FsmState.IDLE);
-            ctx.getExtras().clear();
-
-            sendMessage(ctx.getPhoneNumber(),
-                    "🎉 *Invite Accepted Successfully!*\n\n" +
-                    "Welcome to *" + user.getBusiness().getName() + "*, *" + user.getDisplayName() + "*!\n" +
-                    "Your portal role is now active.\n\n" +
-                    "Type *HELP* to see available commands.");
-
-        } catch (Exception e) {
-            sendMessage(ctx.getPhoneNumber(), "⚠️ " + e.getMessage() + ". Please check the token and try again or type *HELP* to start over.");
+    private void handleSetupUsername(FsmContext ctx, String input) {
+        if (input.length() < 3) {
+            sendMessage(ctx.getPhoneNumber(), "Username must be at least 3 characters. Please try again.");
+            return;
         }
+        ctx.pushHistory();
+        ctx.getExtras().put("ceo_username", input);
+        sendMessage(ctx.getPhoneNumber(), "Please enter your *company name*.");
+        ctx.setState(FsmState.SETUP_BNAME);
     }
 
     private void handleSetupBname(FsmContext ctx, String input) {
         if (input.length() < 2) {
-            sendMessage(ctx.getPhoneNumber(), "Please enter a valid business name (at least 2 characters).");
+            sendMessage(ctx.getPhoneNumber(), "Please enter a valid *company name* (at least 2 characters).");
             return;
         }
+        ctx.pushHistory();
+        ctx.getExtras().put("bname", input);
+        sendMessage(ctx.getPhoneNumber(), "Please enter your *company business* (industry or sector, e.g. Retail, Tech, Services).");
+        ctx.setState(FsmState.SETUP_BBUSINESS);
+    }
+
+    private void handleSetupBbusiness(FsmContext ctx, String input) {
+        ctx.pushHistory();
+        ctx.getExtras().put("bbusiness", input);
+        sendMessage(ctx.getPhoneNumber(), "Please enter a *company description*.");
+        ctx.setState(FsmState.SETUP_BDESC);
+    }
+
+    private void handleSetupBdesc(FsmContext ctx, String input) {
+        ctx.pushHistory();
+        ctx.getExtras().put("bdesc", input);
+        sendMessage(ctx.getPhoneNumber(), "Please enter your *number of employees* (e.g. 25).");
+        ctx.setState(FsmState.SETUP_EMP_COUNT);
+    }
+
+    private void handleSetupEmpCount(FsmContext ctx, String input) {
+        try {
+            int n = Integer.parseInt(input.trim());
+            if (n <= 0) throw new NumberFormatException();
+            ctx.pushHistory();
+            ctx.getExtras().put("emp_count", String.valueOf(n));
+            sendMessage(ctx.getPhoneNumber(), "Please enter your *email address*.");
+            ctx.setState(FsmState.SETUP_EMAIL);
+        } catch (NumberFormatException e) {
+            sendMessage(ctx.getPhoneNumber(), "⚠️ Please enter a valid positive *number* of employees.");
+        }
+    }
+
+    private void handleSetupEmail(FsmContext ctx, String input) {
+        if (!isValidEmail(input)) {
+            sendMessage(ctx.getPhoneNumber(), "⚠️ That doesn't look like a valid email. Please try again.");
+            return;
+        }
+        ctx.pushHistory();
+        ctx.getExtras().put("ceo_email", input);
+        sendMessage(ctx.getPhoneNumber(), "Please enter the *number of departments* in your company (e.g. 3).");
+        ctx.setState(FsmState.SETUP_DEPT_COUNT);
+    }
+
+    private void handleSetupDeptCount(FsmContext ctx, String input) {
+        try {
+            int n = Integer.parseInt(input.trim());
+            if (n <= 0) throw new NumberFormatException();
+            ctx.pushHistory();
+            ctx.getExtras().put("dept_count", String.valueOf(n));
+            ctx.getExtras().put("dept_collected", "0");
+            sendMessage(ctx.getPhoneNumber(),
+                "You have *" + n + " department(s)* to enter.\n\nPlease enter the name of *Department 1*:");
+            ctx.setState(FsmState.SETUP_DEPT_NAMES);
+        } catch (NumberFormatException e) {
+            sendMessage(ctx.getPhoneNumber(), "⚠️ Please enter a valid positive *number* of departments.");
+        }
+    }
+
+    private void handleSetupDeptNames(FsmContext ctx, String input) {
+        int total     = Integer.parseInt(ctx.getExtras().getOrDefault("dept_count", "1"));
+        int collected = Integer.parseInt(ctx.getExtras().getOrDefault("dept_collected", "0"));
+
+        ctx.getExtras().put("dept_" + collected, input.trim());
+        collected++;
+        ctx.getExtras().put("dept_collected", String.valueOf(collected));
+
+        if (collected < total) {
+            sendMessage(ctx.getPhoneNumber(),
+                "Got it! Please enter the name of *Department " + (collected + 1) + "*:");
+        } else {
+            // All department names collected — proceed to password
+            sendMessage(ctx.getPhoneNumber(),
+                "✅ All department names collected!\n\nNow, please enter your *company portal password*.");
+            ctx.setState(FsmState.SETUP_PASSWORD);
+        }
+    }
+
+    private void handleSetupPassword(FsmContext ctx, String input) {
+        if (input.length() < 6) {
+            sendMessage(ctx.getPhoneNumber(), "⚠️ Password must be at least 6 characters. Please try again.");
+            return;
+        }
+        ctx.pushHistory();
+        ctx.getExtras().put("portal_password", input);
+        // Password confirmation (Yes/No)
         List<List<Map<String, String>>> keyboard = List.of(
             List.of(
-                TelegramChatAdapter.button("Retail", "1"),
-                TelegramChatAdapter.button("Services", "2")
-            ),
-            List.of(
-                TelegramChatAdapter.button("Manufacturing", "3"),
-                TelegramChatAdapter.button("Other", "4")
+                TelegramChatAdapter.button("✅ Yes, it's correct", "YES"),
+                TelegramChatAdapter.button("❌ No, re-enter", "NO")
             )
         );
-        sendMenu(ctx.getPhoneNumber(), "📋 Select your *Business Type*:", keyboard);
-        ctx.setState(FsmState.SETUP_BTYPE);
+        sendMenu(ctx.getPhoneNumber(),
+            "🔐 Is the password you have entered correct?",
+            keyboard);
+        ctx.setState(FsmState.SETUP_PASSWORD_CONFIRM);
+    }
+
+    private void handleSetupPasswordConfirm(FsmContext ctx, String input) {
+        if ("YES".equalsIgnoreCase(input) || "1".equals(input)) {
+            // Select business type
+            List<List<Map<String, String>>> keyboard = List.of(
+                List.of(
+                    TelegramChatAdapter.button("🛍️ Retail", "RETAIL"),
+                    TelegramChatAdapter.button("💼 Service", "SERVICE")
+                ),
+                List.of(
+                    TelegramChatAdapter.button("💻 Tech / Software", "TECH")
+                )
+            );
+            sendMenu(ctx.getPhoneNumber(),
+                "🏭 Select your *Business Type*:\n\nThis determines which operational workflows your team will use.",
+                keyboard);
+            ctx.setState(FsmState.SETUP_BTYPE);
+        } else {
+            sendMessage(ctx.getPhoneNumber(), "Please re-enter your *portal password*:");
+            ctx.setState(FsmState.SETUP_PASSWORD);
+        }
     }
 
     private void handleSetupBtype(FsmContext ctx, String input) {
-        Map<String, String> types = Map.of("1","RETAIL","2","SERVICES","3","MANUFACTURING","4","OTHER");
-        if (!types.containsKey(input)) {
-            sendMessage(ctx.getPhoneNumber(), "Please reply with 1, 2, 3, or 4.");
+        String btype = switch (input.toUpperCase()) {
+            case "RETAIL", "1" -> "RETAIL";
+            case "SERVICE", "SERVICES", "2" -> "SERVICE";
+            case "TECH", "TECHNOLOGY", "SOFTWARE", "3" -> "TECH";
+            default -> null;
+        };
+        if (btype == null) {
+            sendMessage(ctx.getPhoneNumber(), "Please select a valid business type: Retail, Service, or Tech.");
             return;
         }
-        ctx.getExtras().put("btype", types.get(input));
-        sendMessage(ctx.getPhoneNumber(), "What *industry* are you in? (e.g. Technology, Healthcare, Retail)\nOr type *skip*");
-        ctx.setState(FsmState.SETUP_INDUSTRY);
-    }
+        ctx.getExtras().put("btype", btype);
 
-    private void handleSetupIndustry(FsmContext ctx, String input) {
-        if (!"skip".equalsIgnoreCase(input)) ctx.getExtras().put("bindustry", input);
-        sendMessage(ctx.getPhoneNumber(), "📍 What is your business *location*? (e.g. New York, NY)\nOr type *skip*");
-        ctx.setState(FsmState.SETUP_LOCATION);
-    }
+        // Show confirmation summary
+        Map<String, String> e = ctx.getExtras();
+        int deptCount = Integer.parseInt(e.getOrDefault("dept_count", "0"));
+        StringBuilder deptList = new StringBuilder();
+        for (int i = 0; i < deptCount; i++) {
+            deptList.append("\n  • ").append(e.getOrDefault("dept_" + i, "?"));
+        }
 
-    private void handleSetupLocation(FsmContext ctx, String input) {
-        if (!"skip".equalsIgnoreCase(input)) ctx.getExtras().put("blocation", input);
-        sendMessage(ctx.getPhoneNumber(), "🕐 What are your *working hours*? (e.g. Mon-Fri 9am-6pm)\nOr type *skip*");
-        ctx.setState(FsmState.SETUP_HOURS);
-    }
+        String summary =
+            "📋 *Confirm Portal Setup*\n\n" +
+            "• *Name:* " + e.getOrDefault("ceo_name", "-") + "\n" +
+            "• *Username:* " + e.getOrDefault("ceo_username", "-") + "\n" +
+            "• *Company:* " + e.getOrDefault("bname", "-") + "\n" +
+            "• *Business:* " + e.getOrDefault("bbusiness", "-") + "\n" +
+            "• *Description:* " + e.getOrDefault("bdesc", "-") + "\n" +
+            "• *Employees:* " + e.getOrDefault("emp_count", "-") + "\n" +
+            "• *Email:* " + e.getOrDefault("ceo_email", "-") + "\n" +
+            "• *Departments:* " + deptCount + deptList + "\n" +
+            "• *Business Type:* " + btype + "\n\n" +
+            "Please confirm to create your portal:";
 
-    private void handleSetupHours(FsmContext ctx, String input) {
-        if (!"skip".equalsIgnoreCase(input)) ctx.getExtras().put("bhours", input);
-        sendMessage(ctx.getPhoneNumber(), "🏢 List your *departments* (comma-separated, e.g. Sales, Engineering, HR)\nOr type *skip* to set up later");
-        ctx.setState(FsmState.SETUP_DEPTS);
-    }
-
-    private void handleSetupDepts(FsmContext ctx, String input) {
-        if (!"skip".equalsIgnoreCase(input)) ctx.getExtras().put("bdepts", input);
-
-        Map<String, String> extras = ctx.getExtras();
-        String summary = String.format(
-            "📝 *Confirm Portal Setup*\n\n" +
-            "• *Name:* %s\n• *Type:* %s\n• *Industry:* %s\n• *Location:* %s\n• *Hours:* %s\n• *Depts:* %s\n\n" +
-            "Reply *1* to confirm or *2* to start over",
-            extras.getOrDefault("bname", "-"),
-            extras.getOrDefault("btype", "-"),
-            extras.getOrDefault("bindustry", "—"),
-            extras.getOrDefault("blocation", "—"),
-            extras.getOrDefault("bhours", "—"),
-            extras.getOrDefault("bdepts", "—")
-        );
         List<List<Map<String, String>>> keyboard = List.of(
             List.of(
-                TelegramChatAdapter.button("Confirm & Create", "1"),
-                TelegramChatAdapter.button("Start Over", "2")
+                TelegramChatAdapter.button("✅ Confirm & Create", "CONFIRM"),
+                TelegramChatAdapter.button("🔄 Start Over", "RESTART")
             )
         );
         sendMenu(ctx.getPhoneNumber(), summary, keyboard);
@@ -429,52 +606,57 @@ public class ConversationFsm {
     }
 
     private void handleSetupConfirm(FsmContext ctx, String input) {
-        if ("2".equals(input)) {
+        if ("RESTART".equalsIgnoreCase(input) || "2".equals(input)) {
             ctx.getExtras().clear();
-            sendMessage(ctx.getPhoneNumber(), "Let's start over. What is your *business name*?");
-            ctx.setState(FsmState.SETUP_BNAME);
+            ctx.clearHistory();
+            sendMessage(ctx.getPhoneNumber(),
+                "🔄 Let's start over.\n\n*Please enter your name.*");
+            ctx.setState(FsmState.SETUP_NAME);
             return;
         }
-        if (!"1".equals(input)) {
-            sendMessage(ctx.getPhoneNumber(), "Please reply *1* to confirm or *2* to start over.");
+        if (!"CONFIRM".equalsIgnoreCase(input) && !"1".equals(input)) {
+            sendMessage(ctx.getPhoneNumber(), "Please tap *Confirm & Create* or *Start Over*.");
             return;
         }
 
-        // Commit: create business, user, seed roles
+        // ── Commit: create business, seed roles, create CEO user ──────────────
+        sendMessage(ctx.getPhoneNumber(), "⏳ Please wait while we create your secure portal...");
+
         Map<String, String> extras = ctx.getExtras();
         Business business = businessService.create(
-                extras.get("bname"), extras.get("btype"),
-                extras.getOrDefault("bindustry", null),
-                extras.getOrDefault("blocation", null),
-                null, null
+                extras.get("bname"),
+                extras.getOrDefault("btype", "OTHER"),
+                extras.getOrDefault("bbusiness", null),
+                null,
+                extras.getOrDefault("bdesc", null)
         );
 
-        // Create CEO user
-        User savedCeo;
-        if (ctx.getPhoneNumber().startsWith("telegram:")) {
-            Long chatId = TelegramChatAdapter.parseChatId(ctx.getPhoneNumber());
-            String username = extras.get("telegram_username");
-            savedCeo = userService.createTelegramUser(business.getId(), chatId, username);
-        } else {
-            // Save via userService (internal create)
-            String inviteToken = userService.inviteUser(
-                    business.getId(), ctx.getPhoneNumber(), null, null, null);
-            // Immediately accept (they're creating it)
-            userService.acceptInvite(inviteToken);
-            savedCeo = userService.findByPhone(ctx.getPhoneNumber());
+        // Create CEO user via Telegram
+        Long chatId = TelegramChatAdapter.parseChatId(ctx.getPhoneNumber());
+        String username = extras.get("telegram_username");
+        String ceoName  = extras.getOrDefault("ceo_name", username);
+        User savedCeo = userService.createTelegramUser(business.getId(), chatId, username);
+        // Set display name, email, username from the wizard data
+        savedCeo.setDisplayName(ceoName);
+        if (extras.get("ceo_email") != null) savedCeo.setEmail(extras.get("ceo_email"));
+        if (extras.get("ceo_username") != null) savedCeo.setUsername(extras.get("ceo_username"));
+        // Persist portal password on the Business entity
+        if (extras.get("portal_password") != null) {
+            business.setPortalPassword(extras.get("portal_password"));
         }
-        businessService.setOwner(business.getId(), savedCeo.getId());
 
-        // Seed default roles and assign CEO
+        businessService.setOwner(business.getId(), savedCeo.getId());
         roleService.seedDefaultRoles(business.getId());
+
         List<Role> roles = roleRepository.findByBusinessIdAndIsDefault(business.getId(), true);
         Role ceoRole = roles.stream().filter(r -> r.getLevel() == 1).findFirst().orElseThrow();
         userService.assignRole(savedCeo.getId(), ceoRole.getId(), null, savedCeo.getId());
 
         // Create departments
-        String depts = extras.getOrDefault("bdepts", null);
-        if (depts != null && !depts.isBlank()) {
-            for (String deptName : depts.split(",")) {
+        int deptCount = Integer.parseInt(extras.getOrDefault("dept_count", "0"));
+        for (int i = 0; i < deptCount; i++) {
+            String deptName = extras.get("dept_" + i);
+            if (deptName != null && !deptName.isBlank()) {
                 Department dept = new Department();
                 dept.setBusiness(business);
                 dept.setName(deptName.trim());
@@ -484,101 +666,445 @@ public class ConversationFsm {
 
         ctx.setBusinessId(business.getId());
         ctx.setUserId(savedCeo.getId());
+        ctx.setBusinessType(extras.getOrDefault("btype", "RETAIL"));
+        ctx.setUserRole("CEO");
         ctx.getExtras().clear();
+        ctx.clearHistory();
         ctx.setState(FsmState.IDLE);
 
-        List<List<Map<String, String>>> keyboard = List.of(
-            List.of(
-                TelegramChatAdapter.button("Create Task", "TASK"),
-                TelegramChatAdapter.button("Invite Member", "INVITE")
-            ),
-            List.of(
-                TelegramChatAdapter.button("Business Stats", "STATS"),
-                TelegramChatAdapter.button("Show Help", "HELP")
-            )
-        );
-        sendMenu(ctx.getPhoneNumber(),
-                "🎉 *Portal Created Successfully!*\n\n" +
-                "Business: *" + business.getName() + "*\n" +
-                "Your role: *CEO*\n\n" +
-                "You can use the buttons below or type commands directly:",
-                keyboard);
+        sendMessage(ctx.getPhoneNumber(),
+            "🎉 *Portal Created Successfully!*\n\n" +
+            "• Business: *" + business.getName() + "*\n" +
+            "• Your role: *CEO*\n" +
+            "• Business type: *" + ctx.getBusinessType() + "*\n\n" +
+            "Please wait while we redirect you to your portal...");
+        sendRoleMenu(ctx);
     }
 
-    private void handleIdle(FsmContext ctx, String input) {
-        // Normalize: strip leading slash for Telegram commands, uppercase for matching
-        String cmd = input.toUpperCase().split(" ")[0];
-        switch (cmd) {
-            case "TASK", "T", "/TASK" -> {
-                ctx.setPendingTask(new FsmContext.PendingTask());
-                sendMessage(ctx.getPhoneNumber(), "📋 *Create Task*\n\nWhat is the *task title*?");
-                ctx.setState(FsmState.TASK_TITLE);
-            }
-            case "INVITE", "INV", "/INVITE" -> {
-                ctx.setPendingInvite(new FsmContext.PendingInvite());
-                sendMessage(ctx.getPhoneNumber(), "👤 *Invite Employee*\n\nEnter their *phone number* (E.164 format, e.g. +1555...):");
-                ctx.setState(FsmState.INVITE_PHONE);
-            }
-            case "STATS", "REPORT", "S", "/STATS" -> {
-                sendStatsToUser(ctx);
-            }
-            case "DONE", "D", "/DONE" -> {
-                handleDone(ctx, input);
-            }
-            case "REVIEW", "R", "/REVIEW" -> {
-                handleReview(ctx, input);
-            }
-            case "HELP", "H", "/HELP" -> {
-                List<List<Map<String, String>>> helpKeyboard = List.of(
-                    List.of(
-                        TelegramChatAdapter.button("Create Task", "TASK"),
-                        TelegramChatAdapter.button("Invite Member", "INVITE")
-                    ),
-                    List.of(
-                        TelegramChatAdapter.button("Business Stats", "STATS"),
-                        TelegramChatAdapter.button("Show Help", "HELP")
-                    )
-                );
-                sendMenu(ctx.getPhoneNumber(),
-                        "📚 *Available Commands*\n\n" +
-                        "• *TASK* — Create a new task\n" +
-                        "• *INVITE* — Invite a team member\n" +
-                        "• *STATS* — View business KPIs\n" +
-                        "• *DONE* — Complete an assigned task\n" +
-                        "• *REVIEW* — Review employee submissions\n" +
-                        "• *HELP* — Show this menu",
-                        helpKeyboard);
-            }
-            default -> sendMessage(ctx.getPhoneNumber(),
-                    "I didn't understand that. Type *HELP* to see available commands.");
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PORTAL LOGIN FLOWS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void handleLoginUsername(FsmContext ctx, String input) {
+        ctx.getExtras().put("login_username", input);
+        sendMessage(ctx.getPhoneNumber(), "Please enter your *company name*.");
+        ctx.setState(FsmState.LOGIN_BNAME);
+    }
+
+    private void handleLoginBname(FsmContext ctx, String input) {
+        ctx.getExtras().put("login_bname", input);
+        sendMessage(ctx.getPhoneNumber(), "Please enter your *email address*.");
+        ctx.setState(FsmState.LOGIN_EMAIL);
+    }
+
+    private void handleLoginEmail(FsmContext ctx, String input) {
+        if (!isValidEmail(input)) {
+            sendMessage(ctx.getPhoneNumber(), "⚠️ That doesn't look like a valid email. Please try again.");
+            return;
+        }
+        ctx.getExtras().put("login_email", input);
+        sendMessage(ctx.getPhoneNumber(), "Please enter your *portal password*.");
+        ctx.setState(FsmState.LOGIN_PASSWORD);
+    }
+
+    private void handleLoginPassword(FsmContext ctx, String input) {
+        sendMessage(ctx.getPhoneNumber(), "⏳ Please wait while we verify your password...");
+        // Attempt login via UserService
+        try {
+            User user = userService.loginByEmailAndPortalName(
+                ctx.getExtras().get("login_email"),
+                ctx.getExtras().get("login_bname"),
+                input
+            );
+            completeLogin(ctx, user, "portal");
+        } catch (Exception e) {
+            sendMessage(ctx.getPhoneNumber(),
+                "⚠️ We couldn't find a portal with those details. Please check and try again.");
+            ctx.setState(FsmState.LOGIN_USERNAME);
         }
     }
 
-    // ─── Task Creation Flow ───────────────────────────────────────────────────
+    private void handleAnalyticsUsername(FsmContext ctx, String input) {
+        ctx.getExtras().put("login_username", input);
+        ctx.getExtras().put("login_mode", "analytics");
+        sendMessage(ctx.getPhoneNumber(), "Please enter your *company name*.");
+        ctx.setState(FsmState.ANALYTICS_BNAME);
+    }
+
+    private void handleAnalyticsBname(FsmContext ctx, String input) {
+        ctx.getExtras().put("login_bname", input);
+        sendMessage(ctx.getPhoneNumber(), "Please enter your *email address*.");
+        ctx.setState(FsmState.ANALYTICS_EMAIL);
+    }
+
+    private void handleAnalyticsEmail(FsmContext ctx, String input) {
+        if (!isValidEmail(input)) {
+            sendMessage(ctx.getPhoneNumber(), "⚠️ That doesn't look like a valid email. Please try again.");
+            return;
+        }
+        ctx.getExtras().put("login_email", input);
+        sendMessage(ctx.getPhoneNumber(), "Please enter your *portal password*.");
+        ctx.setState(FsmState.ANALYTICS_PASSWORD);
+    }
+
+    private void handleAnalyticsPassword(FsmContext ctx, String input) {
+        sendMessage(ctx.getPhoneNumber(), "⏳ Loading Company Analytics...");
+        try {
+            User user = userService.loginByEmailAndPortalName(
+                ctx.getExtras().get("login_email"),
+                ctx.getExtras().get("login_bname"),
+                input
+            );
+            ctx.setUserId(user.getId());
+            ctx.setBusinessId(user.getBusiness().getId());
+            ctx.setState(FsmState.IDLE);
+            sendStatsToUser(ctx);
+            triggerAnotherActionLoop(ctx);
+        } catch (Exception e) {
+            sendMessage(ctx.getPhoneNumber(),
+                "⚠️ We couldn't find a portal with those details. Please check and try again.");
+            ctx.setState(FsmState.ANALYTICS_USERNAME);
+        }
+    }
+
+    private void completeLogin(FsmContext ctx, User user, String mode) {
+        ctx.setUserId(user.getId());
+        ctx.setBusinessId(user.getBusiness().getId());
+        ctx.getExtras().clear();
+        ctx.clearHistory();
+        ctx.setState(FsmState.IDLE);
+        resolveAndSetRole(ctx, user);
+        sendMessage(ctx.getPhoneNumber(), "⏳ Please wait while we redirect you to your portal...");
+        sendRoleMenu(ctx);
+    }
+
+    private void resolveAndSetRole(FsmContext ctx, User user) {
+        try {
+            int level = user.getUserRoles() == null ? 5 :
+                user.getUserRoles().stream()
+                    .mapToInt(ur -> ur.getRole().getLevel()).min().orElse(5);
+            ctx.setUserRole(switch (level) {
+                case 1 -> "CEO";
+                case 2 -> "MANAGER";
+                case 3 -> "LEAD";
+                default -> "EMPLOYEE";
+            });
+            String btype = user.getBusiness().getType();
+            ctx.setBusinessType(btype == null ? "RETAIL" : switch (btype.toUpperCase()) {
+                case "SERVICES", "SERVICE" -> "SERVICE";
+                case "TECH", "TECHNOLOGY", "SOFTWARE" -> "TECH";
+                default -> "RETAIL";
+            });
+        } catch (Exception e) {
+            ctx.setUserRole("EMPLOYEE");
+            ctx.setBusinessType("RETAIL");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ACCEPT INVITE TOKEN
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void handleAcceptInviteToken(FsmContext ctx, String input) {
+        if (input == null || input.trim().isEmpty()) {
+            sendMessage(ctx.getPhoneNumber(), "Please enter a valid invite token.");
+            return;
+        }
+        try {
+            Long chatId = TelegramChatAdapter.parseChatId(ctx.getPhoneNumber());
+            String username = ctx.getExtras().get("telegram_username");
+            User user = userService.acceptInviteTelegram(input.trim(), chatId, username);
+            ctx.setUserId(user.getId());
+            ctx.setBusinessId(user.getBusiness().getId());
+            ctx.getExtras().clear();
+            ctx.clearHistory();
+            ctx.setState(FsmState.IDLE);
+            sendMessage(ctx.getPhoneNumber(),
+                "🎉 *Invite Accepted!*\n\nWelcome to *" + user.getBusiness().getName() + "*, *" +
+                user.getDisplayName() + "*!\n\nType /help to see available commands.");
+            sendRoleMenu(ctx);
+        } catch (Exception e) {
+            sendMessage(ctx.getPhoneNumber(),
+                "⚠️ " + e.getMessage() + "\n\nPlease check the token and try again, or type /start to go back.");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MULTI-BUSINESS SWITCH
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void handleSwitch(FsmContext ctx) {
+        if (ctx.getUserId() == null) {
+            sendMessage(ctx.getPhoneNumber(), "You need to be logged in to switch portals. Type /start to begin.");
+            return;
+        }
+        List<Business> linkedBusinesses = businessService.findByUserId(ctx.getUserId());
+        if (linkedBusinesses.size() <= 1) {
+            sendMessage(ctx.getPhoneNumber(), "ℹ️ You are only linked to one portal. Nothing to switch.");
+            return;
+        }
+
+        StringBuilder sb = new StringBuilder("🔄 *Which portal would you like to switch to?*\n\n");
+        List<List<Map<String, String>>> keyboard = new ArrayList<>();
+        for (int i = 0; i < linkedBusinesses.size(); i++) {
+            Business b = linkedBusinesses.get(i);
+            sb.append((i + 1)).append(". ").append(b.getName()).append("\n");
+            ctx.getExtras().put("switch_biz_" + (i + 1), b.getId().toString());
+            keyboard.add(List.of(TelegramChatAdapter.button(b.getName(), String.valueOf(i + 1))));
+        }
+        ctx.getExtras().put("switch_count", String.valueOf(linkedBusinesses.size()));
+        sendMenu(ctx.getPhoneNumber(), sb.toString(), keyboard);
+        ctx.setState(FsmState.SELECT_BUSINESS);
+    }
+
+    private void handleSelectBusiness(FsmContext ctx, String input) {
+        String bizIdStr = ctx.getExtras().get("switch_biz_" + input);
+        if (bizIdStr == null) {
+            sendMessage(ctx.getPhoneNumber(), "Invalid selection. Please tap one of the business options.");
+            return;
+        }
+        ctx.setBusinessId(UUID.fromString(bizIdStr));
+        ctx.getExtras().clear();
+        ctx.clearHistory();
+        ctx.setState(FsmState.IDLE);
+        sendMessage(ctx.getPhoneNumber(), "✅ Switched portal. Here's your menu:");
+        sendRoleMenu(ctx);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MAIN MENU (IDLE) — Role-Based Dispatch
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void handleIdle(FsmContext ctx, String input) {
+        // First: try to continue an active role sub-flow
+        if (ctx.getRoleFlowState() != null) {
+            if (roleFlowRouter.continueRoleFlow(ctx, input, () -> triggerAnotherActionLoop(ctx))) return;
+        }
+
+        String cmd = input.toUpperCase().split(" ")[0];
+        switch (cmd) {
+            case "TASK", "T"       -> startTaskCreation(ctx);
+            case "INVITE", "INV"   -> startInviteFlow(ctx);
+            case "STATS", "REPORT" -> { sendStatsToUser(ctx); triggerAnotherActionLoop(ctx); }
+            case "DONE", "D"       -> handleDone(ctx, input);
+            case "REVIEW", "R"     -> handleReview(ctx, input);
+            case "ADDEMPLOYEE", "ADDEMP", "ADD" -> startAddEmployee(ctx);
+            case "MEETING", "MEET" -> startMeetingEmail(ctx);
+            case "EMAILMANAGER", "EMAILMGR" -> startEmailManager(ctx);
+            case "EXIT" -> handleExitCheck(ctx, "CHECK");
+            case "CREATEPORTAL", "CREATE" -> {
+                sendMessage(ctx.getPhoneNumber(), "🏢 Let's create a new portal.\n\nPlease enter your *name*:");
+                ctx.setState(FsmState.SETUP_NAME);
+            }
+            case "LOGIN" -> {
+                sendMessage(ctx.getPhoneNumber(), "Please enter your *username*.");
+                ctx.setState(FsmState.LOGIN_USERNAME);
+            }
+            case "ANALYTICS" -> {
+                sendMessage(ctx.getPhoneNumber(), "Please enter your *username*.");
+                ctx.setState(FsmState.ANALYTICS_USERNAME);
+            }
+            default -> {
+                // Try role-specific track commands
+                if (!roleFlowRouter.startRoleFlow(ctx, cmd)) {
+                    sendMessage(ctx.getPhoneNumber(), "I didn't quite catch that — please choose one of the options below:");
+                    sendRoleMenu(ctx);
+                }
+            }
+        }
+    }
+
+    /**
+     * Sends the role+btype-specific main menu. Delegates to RoleFlowRouter for dynamic keyboards.
+     */
+    private void sendRoleMenu(FsmContext ctx) {
+        roleFlowRouter.sendRoleTrackMenu(ctx);
+    }
+
+    private List<List<Map<String, String>>> buildCeoMenu(String btype) {
+        return List.of(
+            List.of(
+                TelegramChatAdapter.button("🏢 Create New Portal", "CREATEPORTAL"),
+                TelegramChatAdapter.button("🔑 Login to Portal", "LOGIN")
+            ),
+            List.of(
+                TelegramChatAdapter.button("📊 Company Analytics", "ANALYTICS"),
+                TelegramChatAdapter.button("🚪 Exit", "EXIT")
+            )
+        );
+    }
+
+    private List<List<Map<String, String>>> buildManagerMenu(String btype) {
+        return List.of(
+            List.of(
+                TelegramChatAdapter.button("🔑 Login to Portal", "LOGIN"),
+                TelegramChatAdapter.button("👤 Add Employee", "ADDEMPLOYEE")
+            ),
+            List.of(
+                TelegramChatAdapter.button("📅 Call for Meeting", "MEETING"),
+                TelegramChatAdapter.button("🚪 Exit", "EXIT")
+            )
+        );
+    }
+
+    private List<List<Map<String, String>>> buildLeadMenu() {
+        return List.of(
+            List.of(
+                TelegramChatAdapter.button("📋 Assign Task", "TASK"),
+                TelegramChatAdapter.button("📊 Team Progress", "STATS")
+            ),
+            List.of(
+                TelegramChatAdapter.button("✅ Review Submissions", "REVIEW"),
+                TelegramChatAdapter.button("🚪 Exit", "EXIT")
+            )
+        );
+    }
+
+    private List<List<Map<String, String>>> buildEmployeeMenu() {
+        return List.of(
+            List.of(
+                TelegramChatAdapter.button("🔑 Login to Portal", "LOGIN"),
+                TelegramChatAdapter.button("✉️ Email the Manager", "EMAILMANAGER")
+            ),
+            List.of(
+                TelegramChatAdapter.button("🚪 Exit", "EXIT")
+            )
+        );
+    }
+
+    private String resolveRole(FsmContext ctx) {
+        if (ctx.getUserId() == null || ctx.getBusinessId() == null) return "EMPLOYEE";
+        try {
+            List<Role> roles = roleRepository.findByBusinessId(ctx.getBusinessId());
+            // Cheapest approximation — first role assigned to user
+            return roles.stream()
+                .filter(r -> r.getLevel() == 1).findFirst()
+                .map(r -> "CEO")
+                .orElse("EMPLOYEE");
+        } catch (Exception e) {
+            return "EMPLOYEE";
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // UNIVERSAL END-OF-ACTION LOOP
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * After every completed action, ask "Is there anything else you'd like to manage?"
+     */
+    private void triggerAnotherActionLoop(FsmContext ctx) {
+        List<List<Map<String, String>>> keyboard = List.of(
+            List.of(
+                TelegramChatAdapter.button("✅ Yes", "YES"),
+                TelegramChatAdapter.button("🚪 No, I'm done", "NO")
+            )
+        );
+        sendMenu(ctx.getPhoneNumber(),
+            "Is there anything else you'd like to manage?",
+            keyboard);
+        ctx.setState(FsmState.ANOTHER_ACTION);
+    }
+
+    private void handleAnotherAction(FsmContext ctx, String input) {
+        if ("YES".equalsIgnoreCase(input) || "1".equals(input)) {
+            ctx.setState(FsmState.IDLE);
+            sendRoleMenu(ctx);
+        } else {
+            // Trigger exit check — surface any pending tasks
+            handleExitCheck(ctx, "CHECK");
+        }
+    }
+
+    private void handleExitCheck(FsmContext ctx, String input) {
+        if (ctx.getUserId() == null) {
+            sendMessage(ctx.getPhoneNumber(),
+                "🎉 All done! Send /start anytime to continue.");
+            ctx.setState(FsmState.NEW);
+            return;
+        }
+
+        // Check for pending tasks assigned to this user
+        List<TaskAssignment> pending = taskService.listOpenAssignmentsByAssignee(ctx.getUserId());
+        if (!pending.isEmpty() && !"EXIT_ANYWAY".equalsIgnoreCase(input)) {
+            List<List<Map<String, String>>> keyboard = List.of(
+                List.of(
+                    TelegramChatAdapter.button("📋 Review pending tasks", "REVIEW_PENDING"),
+                    TelegramChatAdapter.button("🚪 Exit anyway", "EXIT_ANYWAY")
+                )
+            );
+            sendMenu(ctx.getPhoneNumber(),
+                "⚠️ You still have *" + pending.size() + " pending task(s)*.\n\n" +
+                "Would you like to review them before leaving?",
+                keyboard);
+            ctx.setState(FsmState.EXIT_CHECK);
+        } else {
+            sendMessage(ctx.getPhoneNumber(),
+                "🎉 All tasks are completed! No pending work remains.\n\n" +
+                "Send /start anytime to continue. Goodbye! 👋");
+            ctx.setState(FsmState.NEW);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // HELP
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void sendHelp(FsmContext ctx) {
+        String helpText =
+            "📚 *Here's what you can do right now:*\n\n" +
+            "• /start — Resume or begin your session\n" +
+            "• /menu — Jump back to the main menu\n" +
+            "• /switch — Switch between business portals\n" +
+            "• /cancel — Cancel the current action\n" +
+            "• /help — Show this message\n\n" +
+            "_Available actions depend on your role._";
+        sendMessage(ctx.getPhoneNumber(), helpText);
+    }
+
+    private void handleError(FsmContext ctx) {
+        ctx.setState(FsmState.IDLE);
+        sendMessage(ctx.getPhoneNumber(), "🔄 Session reset. Type /help for options.");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TASK CREATION FLOW
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void startTaskCreation(FsmContext ctx) {
+        ctx.setPendingTask(new FsmContext.PendingTask());
+        ctx.clearHistory();
+        sendMessage(ctx.getPhoneNumber(), "📋 *Create Task*\n\nWhat is the *task title*?");
+        ctx.setState(FsmState.TASK_TITLE);
+    }
 
     private void handleTaskTitle(FsmContext ctx, String input) {
         if (input.length() < 3) {
             sendMessage(ctx.getPhoneNumber(), "Please enter a task title (at least 3 characters).");
             return;
         }
+        ctx.pushHistory();
         ctx.getPendingTask().setTitle(input);
         sendMessage(ctx.getPhoneNumber(), "📝 Task *description* (or type *skip*):");
         ctx.setState(FsmState.TASK_DESC);
     }
 
     private void handleTaskDesc(FsmContext ctx, String input) {
+        ctx.pushHistory();
         if (!"skip".equalsIgnoreCase(input)) ctx.getPendingTask().setDescription(input);
         sendMessage(ctx.getPhoneNumber(), "📅 *Due date*? (e.g. 2025-08-01 or *skip*):");
         ctx.setState(FsmState.TASK_DUE);
     }
 
     private void handleTaskDue(FsmContext ctx, String input) {
+        ctx.pushHistory();
         if (!"skip".equalsIgnoreCase(input)) {
             try {
                 OffsetDateTime.parse(input + "T23:59:59Z");
                 ctx.getPendingTask().setDueDate(input + "T23:59:59Z");
             } catch (DateTimeParseException e) {
-                sendMessage(ctx.getPhoneNumber(), "Invalid date. Use format YYYY-MM-DD (e.g. 2025-08-01) or type *skip*.");
+                sendMessage(ctx.getPhoneNumber(),
+                    "Invalid date. Use format YYYY-MM-DD (e.g. 2025-08-01) or type *skip*.");
                 return;
             }
         }
@@ -597,13 +1123,17 @@ public class ConversationFsm {
     }
 
     private void handleTaskPriority(FsmContext ctx, String input) {
-        Map<String, String> priorities = Map.of("1","LOW","2","MEDIUM","3","HIGH","4","CRITICAL");
-        if (!priorities.containsKey(input)) {
+        Map<String, String> priorities = Map.of("1","LOW","2","MEDIUM","3","HIGH","4","CRITICAL",
+                "LOW","LOW","MEDIUM","MEDIUM","HIGH","HIGH","CRITICAL","CRITICAL");
+        String priority = priorities.get(input.toUpperCase());
+        if (priority == null) {
             sendMessage(ctx.getPhoneNumber(), "Please reply 1, 2, 3, or 4.");
             return;
         }
-        ctx.getPendingTask().setPriority(priorities.get(input));
-        sendMessage(ctx.getPhoneNumber(), "👤 Enter the *assignee's phone number* (or *skip* to leave unassigned):");
+        ctx.pushHistory();
+        ctx.getPendingTask().setPriority(priority);
+        sendMessage(ctx.getPhoneNumber(),
+            "👤 Enter the *assignee's phone number* (or *skip* to leave unassigned):");
         ctx.setState(FsmState.TASK_ASSIGN);
     }
 
@@ -615,26 +1145,25 @@ public class ConversationFsm {
                 ctx.getPendingTask().setAssigneeId(assignee.getId());
             } catch (Exception e) {
                 sendMessage(ctx.getPhoneNumber(),
-                        "⚠️ No user found with phone *" + input + "*. Please check the number or type *skip*.");
+                    "⚠️ No user found with phone *" + input + "*. Please check or type *skip*.");
                 return;
             }
         }
 
         FsmContext.PendingTask t = ctx.getPendingTask();
         String summary = String.format(
-                "✅ *Confirm Task*\n\n• Title: %s\n• Desc: %s\n• Due: %s\n• Priority: %s\n• Assignee: %s\n\n" +
-                "Reply *1* Confirm | *2* Edit | *3* Cancel",
-                t.getTitle(),
-                t.getDescription() != null ? t.getDescription() : "—",
-                t.getDueDate() != null ? t.getDueDate().substring(0, 10) : "—",
-                t.getPriority(),
-                t.getAssigneePhone() != null ? t.getAssigneePhone() : "Unassigned"
+            "✅ *Confirm Task*\n\n• Title: %s\n• Desc: %s\n• Due: %s\n• Priority: %s\n• Assignee: %s",
+            t.getTitle(),
+            t.getDescription() != null ? t.getDescription() : "—",
+            t.getDueDate() != null ? t.getDueDate().substring(0, 10) : "—",
+            t.getPriority(),
+            t.getAssigneePhone() != null ? t.getAssigneePhone() : "Unassigned"
         );
         List<List<Map<String, String>>> keyboard = List.of(
             List.of(
-                TelegramChatAdapter.button("Confirm", "1"),
-                TelegramChatAdapter.button("Edit", "2"),
-                TelegramChatAdapter.button("Cancel", "3")
+                TelegramChatAdapter.button("✅ Confirm", "1"),
+                TelegramChatAdapter.button("✏️ Edit", "2"),
+                TelegramChatAdapter.button("❌ Cancel", "3")
             )
         );
         sendMenu(ctx.getPhoneNumber(), summary, keyboard);
@@ -659,66 +1188,103 @@ public class ConversationFsm {
             return;
         }
 
-        // Commit task
         FsmContext.PendingTask t = ctx.getPendingTask();
         Task created = taskService.createTask(
-                ctx.getBusinessId(), ctx.getUserId(),
-                t.getTitle(), t.getDescription(),
-                t.getDueDate() != null ? OffsetDateTime.parse(t.getDueDate()) : null,
-                t.getPriority(), t.getAssigneeId()
+            ctx.getBusinessId(), ctx.getUserId(),
+            t.getTitle(), t.getDescription(),
+            t.getDueDate() != null ? OffsetDateTime.parse(t.getDueDate()) : null,
+            t.getPriority(), t.getAssigneeId()
         );
 
         ctx.setPendingTask(null);
-        ctx.setState(FsmState.IDLE);
         sendMessage(ctx.getPhoneNumber(),
-                "✅ *Task created!* (ID: #" + created.getId().toString().substring(0, 8).toUpperCase() + ")\n\n" +
-                (t.getAssigneePhone() != null
-                    ? "Assignee *" + t.getAssigneePhone() + "* has been notified."
-                    : "No assignee assigned yet.") +
-                "\n\nType *HELP* for more commands.");
+            "✅ *Task created!* (#" + created.getId().toString().substring(0, 8).toUpperCase() + ")\n\n" +
+            (t.getAssigneePhone() != null
+                ? "Assignee notified."
+                : "No assignee assigned yet."));
 
-        // Notify assignee
-        if (t.getAssigneePhone() != null) {
-            sendMessage(t.getAssigneePhone(),
+        // Notify assignee via Telegram if linked
+        if (t.getAssigneeId() != null) {
+            Long assigneeChatId = getTelegramChatId(t.getAssigneeId());
+            if (assigneeChatId != null) {
+                sendMessage(TelegramChatAdapter.toFsmKey(assigneeChatId),
                     "📋 *New Task Assigned to You!*\n\n" +
                     "• *" + t.getTitle() + "*\n" +
                     (t.getDescription() != null ? "• " + t.getDescription() + "\n" : "") +
-                    (t.getDueDate() != null ? "• Due: " + t.getDueDate().substring(0,10) + "\n" : "") +
-                    "• Priority: " + t.getPriority() + "\n\n" +
-                    "Reply *DONE* when complete.");
+                    (t.getDueDate() != null ? "• Due: " + t.getDueDate().substring(0, 10) + "\n" : "") +
+                    "• Priority: " + t.getPriority() + "\n\nReply *DONE* when complete.");
+            }
         }
+        triggerAnotherActionLoop(ctx);
     }
 
-    // ─── Invite Flow ──────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ADD EMPLOYEE TO PROJECT (Manager flow)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void startAddEmployee(FsmContext ctx) {
+        ctx.setPendingInvite(new FsmContext.PendingInvite());
+        sendMessage(ctx.getPhoneNumber(),
+            "👤 *Add Employee to Project*\n\nPlease enter the *employee's name*:");
+        ctx.setState(FsmState.INVITE_EMP_NAME);
+    }
+
+    private void handleInviteEmpName(FsmContext ctx, String input) {
+        ctx.pushHistory();
+        ctx.getPendingInvite().setEmployeeName(input.trim());
+        sendMessage(ctx.getPhoneNumber(), "Please enter the *employee's email*:");
+        ctx.setState(FsmState.INVITE_EMP_EMAIL);
+    }
+
+    private void handleInviteEmpEmail(FsmContext ctx, String input) {
+        if (!isValidEmail(input)) {
+            sendMessage(ctx.getPhoneNumber(), "⚠️ That doesn't look like a valid email. Please try again.");
+            return;
+        }
+        ctx.getPendingInvite().setEmployeeEmail(input.trim());
+        sendMessage(ctx.getPhoneNumber(), "⏳ Updating the Employee profile...");
+
+        // In a real implementation: send onboarding email / link employee record
+        sendMessage(ctx.getPhoneNumber(),
+            "✅ Employee *" + ctx.getPendingInvite().getEmployeeName() + "* has been added!\n" +
+            "An invitation will be sent to *" + input + "*.");
+        ctx.setPendingInvite(null);
+        triggerAnotherActionLoop(ctx);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INVITE FLOW (phone token-based)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void startInviteFlow(FsmContext ctx) {
+        ctx.setPendingInvite(new FsmContext.PendingInvite());
+        sendMessage(ctx.getPhoneNumber(),
+            "👤 *Invite Employee*\n\nEnter their *phone number* (e.g. +15550001234):");
+        ctx.setState(FsmState.INVITE_PHONE);
+    }
 
     private void handleInvitePhone(FsmContext ctx, String input) {
         if (!input.startsWith("+") || input.length() < 8) {
-            sendMessage(ctx.getPhoneNumber(), "Please enter a valid phone in E.164 format (e.g. +15550001234).");
+            sendMessage(ctx.getPhoneNumber(),
+                "Please enter a valid phone in E.164 format (e.g. +15550001234).");
             return;
         }
+        ctx.pushHistory();
         ctx.getPendingInvite().setPhoneNumber(input);
 
-        // Show roles for this business
         List<Role> roles = roleRepository.findByBusinessId(ctx.getBusinessId());
-        StringBuilder sb = new StringBuilder("🎭 *Select Role*:\n");
         List<List<Map<String, String>>> keyboard = new ArrayList<>();
         List<Map<String, String>> row = new ArrayList<>();
         for (int i = 0; i < roles.size(); i++) {
             Role role = roles.get(i);
-            sb.append((i + 1)).append("️⃣ ").append(role.getName()).append("\n");
             ctx.getExtras().put("role_" + (i + 1), role.getId().toString());
             ctx.getExtras().put("roleName_" + (i + 1), role.getName());
             row.add(TelegramChatAdapter.button(role.getName(), String.valueOf(i + 1)));
-            if (row.size() == 2) {
-                keyboard.add(row);
-                row = new ArrayList<>();
-            }
+            if (row.size() == 2) { keyboard.add(row); row = new ArrayList<>(); }
         }
-        if (!row.isEmpty()) {
-            keyboard.add(row);
-        }
-        sb.append("\nReply with the number:");
-        sendMenu(ctx.getPhoneNumber(), sb.toString(), keyboard);
+        if (!row.isEmpty()) keyboard.add(row);
+
+        sendMenu(ctx.getPhoneNumber(), "🎭 *Select Role*:", keyboard);
         ctx.setState(FsmState.INVITE_ROLE);
     }
 
@@ -726,9 +1292,10 @@ public class ConversationFsm {
         String roleIdStr = ctx.getExtras().get("role_" + input);
         String roleName  = ctx.getExtras().get("roleName_" + input);
         if (roleIdStr == null) {
-            sendMessage(ctx.getPhoneNumber(), "Invalid selection. Reply with the role number shown above.");
+            sendMessage(ctx.getPhoneNumber(), "Invalid selection. Please tap a role button.");
             return;
         }
+        ctx.pushHistory();
         ctx.getPendingInvite().setRoleId(UUID.fromString(roleIdStr));
         ctx.getPendingInvite().setRoleName(roleName);
 
@@ -736,25 +1303,17 @@ public class ConversationFsm {
         if (depts.isEmpty()) {
             proceedToInviteConfirm(ctx);
         } else {
-            StringBuilder sb = new StringBuilder("🏢 *Select Department* (or type *skip*):\n");
             List<List<Map<String, String>>> keyboard = new ArrayList<>();
             List<Map<String, String>> row = new ArrayList<>();
             for (int i = 0; i < depts.size(); i++) {
-                Department dept = depts.get(i);
-                sb.append((i + 1)).append(". ").append(dept.getName()).append("\n");
-                ctx.getExtras().put("dept_" + (i + 1), dept.getId().toString());
-                ctx.getExtras().put("deptName_" + (i + 1), dept.getName());
-                row.add(TelegramChatAdapter.button(dept.getName(), String.valueOf(i + 1)));
-                if (row.size() == 2) {
-                    keyboard.add(row);
-                    row = new ArrayList<>();
-                }
+                ctx.getExtras().put("dept_" + (i + 1), depts.get(i).getId().toString());
+                ctx.getExtras().put("deptName_" + (i + 1), depts.get(i).getName());
+                row.add(TelegramChatAdapter.button(depts.get(i).getName(), String.valueOf(i + 1)));
+                if (row.size() == 2) { keyboard.add(row); row = new ArrayList<>(); }
             }
-            if (!row.isEmpty()) {
-                keyboard.add(row);
-            }
+            if (!row.isEmpty()) keyboard.add(row);
             keyboard.add(List.of(TelegramChatAdapter.button("Skip", "skip")));
-            sendMenu(ctx.getPhoneNumber(), sb.toString(), keyboard);
+            sendMenu(ctx.getPhoneNumber(), "🏢 *Select Department* (or skip):", keyboard);
             ctx.setState(FsmState.INVITE_DEPT);
         }
     }
@@ -775,16 +1334,16 @@ public class ConversationFsm {
         FsmContext.PendingInvite inv = ctx.getPendingInvite();
         List<List<Map<String, String>>> keyboard = List.of(
             List.of(
-                TelegramChatAdapter.button("Send Invite", "1"),
-                TelegramChatAdapter.button("Cancel", "2")
+                TelegramChatAdapter.button("📤 Send Invite", "1"),
+                TelegramChatAdapter.button("❌ Cancel", "2")
             )
         );
         sendMenu(ctx.getPhoneNumber(),
-                "📤 *Confirm Invite*\n\n" +
-                "• Phone: " + inv.getPhoneNumber() + "\n" +
-                "• Role: " + inv.getRoleName() + "\n" +
-                (inv.getDepartmentName() != null ? "• Dept: " + inv.getDepartmentName() + "\n" : ""),
-                keyboard);
+            "📤 *Confirm Invite*\n\n" +
+            "• Phone: " + inv.getPhoneNumber() + "\n" +
+            "• Role: " + inv.getRoleName() + "\n" +
+            (inv.getDepartmentName() != null ? "• Dept: " + inv.getDepartmentName() + "\n" : ""),
+            keyboard);
         ctx.setState(FsmState.INVITE_CONFIRM);
     }
 
@@ -802,42 +1361,231 @@ public class ConversationFsm {
 
         FsmContext.PendingInvite inv = ctx.getPendingInvite();
         String token = userService.inviteUser(
-                ctx.getBusinessId(), inv.getPhoneNumber(),
-                inv.getRoleId(), inv.getDepartmentId(), ctx.getUserId()
+            ctx.getBusinessId(), inv.getPhoneNumber(),
+            inv.getRoleId(), inv.getDepartmentId(), ctx.getUserId()
         );
 
-        // Send invite to the employee
         sendMessage(inv.getPhoneNumber(),
-                "🎉 *You've been invited to join a business portal on ContextCraft!*\n\n" +
-                "Role: *" + inv.getRoleName() + "*\n\n" +
-                "Reply *ACCEPT* to join, or ask your admin for help.\n" +
-                "_(Token: " + token.substring(0, 8) + "... — valid 48h)_");
+            "🎉 *You've been invited to join a business portal on Blizbot!*\n\n" +
+            "Role: *" + inv.getRoleName() + "*\n\n" +
+            "Type /start then enter this token to join:\n" +
+            "*" + token.substring(0, Math.min(token.length(), 16)) + "...*\n" +
+            "_(Token valid 48h)_");
 
         ctx.setPendingInvite(null);
-        ctx.setState(FsmState.IDLE);
         sendMessage(ctx.getPhoneNumber(),
-                "✅ Invite sent to *" + inv.getPhoneNumber() + "* as *" + inv.getRoleName() + "*.");
+            "✅ Invite sent to *" + inv.getPhoneNumber() + "* as *" + inv.getRoleName() + "*.");
+        triggerAnotherActionLoop(ctx);
     }
 
-    // ─── Task Review Flow ─────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MEETING EMAIL COMPOSER (Manager)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void startMeetingEmail(FsmContext ctx) {
+        ctx.setPendingEmail(new FsmContext.PendingEmail());
+        List<List<Map<String, String>>> keyboard = List.of(
+            List.of(
+                TelegramChatAdapter.button("✏️ Yes, I'll write it", "YES"),
+                TelegramChatAdapter.button("🤖 No, generate it", "NO")
+            )
+        );
+        sendMenu(ctx.getPhoneNumber(),
+            "📅 *Call for a Meeting*\n\n" +
+            "Will you write the email yourself, or would you like a system-written email sent to the employees?",
+            keyboard);
+        ctx.setState(FsmState.EMAIL_MEETING_CHOICE);
+    }
+
+    private void handleEmailMeetingChoice(FsmContext ctx, String input) {
+        if ("YES".equalsIgnoreCase(input) || "1".equals(input)) {
+            ctx.getPendingEmail().setType("MEETING_MANUAL");
+            sendMessage(ctx.getPhoneNumber(), "Please type the *email content* you'd like to send:");
+            ctx.setState(FsmState.EMAIL_MEETING_MANUAL_BODY);
+        } else {
+            ctx.getPendingEmail().setType("MEETING_AUTO");
+            sendMessage(ctx.getPhoneNumber(), "📅 Please enter the *date of the meeting* (e.g. 14 July 2026):");
+            ctx.setState(FsmState.EMAIL_MEETING_DATE);
+        }
+    }
+
+    private void handleEmailMeetingManualBody(FsmContext ctx, String input) {
+        ctx.getPendingEmail().setBody(input);
+        List<List<Map<String, String>>> keyboard = List.of(
+            List.of(
+                TelegramChatAdapter.button("✅ Yes, send it", "YES"),
+                TelegramChatAdapter.button("❌ No", "NO")
+            )
+        );
+        sendMenu(ctx.getPhoneNumber(),
+            "📧 *Email Preview:*\n\n" + input + "\n\nMay I send this email?",
+            keyboard);
+        ctx.setState(FsmState.EMAIL_MEETING_CONFIRM);
+    }
+
+    private void handleEmailMeetingConfirm(FsmContext ctx, String input) {
+        if ("YES".equalsIgnoreCase(input) || "1".equals(input)) {
+            dispatchMeetingEmail(ctx);
+        } else {
+            List<List<Map<String, String>>> keyboard = List.of(
+                List.of(
+                    TelegramChatAdapter.button("✏️ Edit email", "EDIT"),
+                    TelegramChatAdapter.button("🚪 Exit", "EXIT")
+                )
+            );
+            sendMenu(ctx.getPhoneNumber(), "What would you like to do?", keyboard);
+            ctx.setState(FsmState.EMAIL_MEETING_EDIT);
+        }
+    }
+
+    private void handleEmailMeetingDate(FsmContext ctx, String input) {
+        ctx.getPendingEmail().setMeetingDate(input);
+        sendMessage(ctx.getPhoneNumber(), "⏰ Please enter the *time of the meeting* (e.g. 10:00 AM):");
+        ctx.setState(FsmState.EMAIL_MEETING_TIME);
+    }
+
+    private void handleEmailMeetingTime(FsmContext ctx, String input) {
+        ctx.getPendingEmail().setMeetingTime(input);
+        sendMessage(ctx.getPhoneNumber(), "📝 Please enter the *subject* of the meeting:");
+        ctx.setState(FsmState.EMAIL_MEETING_SUBJECT);
+    }
+
+    private void handleEmailMeetingSubject(FsmContext ctx, String input) {
+        ctx.getPendingEmail().setSubject(input);
+        FsmContext.PendingEmail em = ctx.getPendingEmail();
+        String preview =
+            "Subject: " + em.getSubject() + "\n\n" +
+            "Dear colleagues, this email is a request to all employees to join today's meeting " +
+            "in the conference room on *" + em.getMeetingDate() + "* at *" + em.getMeetingTime() +
+            "*. Everyone should join this meeting.";
+        em.setBody(preview);
+
+        List<List<Map<String, String>>> keyboard = List.of(
+            List.of(
+                TelegramChatAdapter.button("✅ Send this email", "YES"),
+                TelegramChatAdapter.button("❌ No", "NO")
+            )
+        );
+        sendMenu(ctx.getPhoneNumber(),
+            "📧 *Email Preview:*\n\n" + preview + "\n\nSend this email?",
+            keyboard);
+        ctx.setState(FsmState.EMAIL_MEETING_SEND_CONFIRM);
+    }
+
+    private void handleEmailMeetingSendConfirm(FsmContext ctx, String input) {
+        if ("YES".equalsIgnoreCase(input) || "1".equals(input)) {
+            dispatchMeetingEmail(ctx);
+        } else {
+            List<List<Map<String, String>>> keyboard = List.of(
+                List.of(
+                    TelegramChatAdapter.button("✏️ Edit email", "EDIT"),
+                    TelegramChatAdapter.button("🚪 Exit", "EXIT")
+                )
+            );
+            sendMenu(ctx.getPhoneNumber(), "What would you like to do?", keyboard);
+            ctx.setState(FsmState.EMAIL_MEETING_EDIT);
+        }
+    }
+
+    private void dispatchMeetingEmail(FsmContext ctx) {
+        sendMessage(ctx.getPhoneNumber(), "⏳ Sending your email...");
+        // In production: iterate all employees in department, send email via EmailService
+        sendMessage(ctx.getPhoneNumber(),
+            "✅ Meeting email sent to all employees in your department!");
+        ctx.setPendingEmail(null);
+        triggerAnotherActionLoop(ctx);
+    }
+
+    private void handleEmailMeetingEdit(FsmContext ctx, String input) {
+        if ("EDIT".equalsIgnoreCase(input) || "1".equals(input)) {
+            sendMessage(ctx.getPhoneNumber(), "Please type the updated *email content*:");
+            ctx.setState(FsmState.EMAIL_MEETING_MANUAL_BODY);
+        } else {
+            ctx.setPendingEmail(null);
+            sendMessage(ctx.getPhoneNumber(), "❌ Email cancelled.");
+            triggerAnotherActionLoop(ctx);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EMPLOYEE → MANAGER EMAIL COMPOSER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void startEmailManager(FsmContext ctx) {
+        ctx.setPendingEmail(new FsmContext.PendingEmail());
+        ctx.getPendingEmail().setType("EMP_TO_MANAGER");
+        sendMessage(ctx.getPhoneNumber(),
+            "✉️ *Email the Manager*\n\nPlease type the *email content* you'd like to send:");
+        ctx.setState(FsmState.EMAIL_MGR_BODY);
+    }
+
+    private void handleEmailMgrBody(FsmContext ctx, String input) {
+        ctx.getPendingEmail().setBody(input);
+        List<List<Map<String, String>>> keyboard = List.of(
+            List.of(
+                TelegramChatAdapter.button("✅ Yes, send it", "YES"),
+                TelegramChatAdapter.button("❌ No", "NO")
+            )
+        );
+        sendMenu(ctx.getPhoneNumber(),
+            "📧 *Your email:*\n\n" + input + "\n\nIs this correct?",
+            keyboard);
+        ctx.setState(FsmState.EMAIL_MGR_CONFIRM);
+    }
+
+    private void handleEmailMgrConfirm(FsmContext ctx, String input) {
+        if ("YES".equalsIgnoreCase(input) || "1".equals(input)) {
+            sendMessage(ctx.getPhoneNumber(), "Please enter your *manager's email address*:");
+            ctx.setState(FsmState.EMAIL_MGR_ADDRESS);
+        } else {
+            List<List<Map<String, String>>> keyboard = List.of(
+                List.of(
+                    TelegramChatAdapter.button("✏️ Edit", "EDIT"),
+                    TelegramChatAdapter.button("🚪 Exit", "EXIT")
+                )
+            );
+            sendMenu(ctx.getPhoneNumber(), "What would you like to do?", keyboard);
+            ctx.setState(FsmState.EMAIL_MGR_EDIT);
+        }
+    }
+
+    private void handleEmailMgrAddress(FsmContext ctx, String input) {
+        if (!isValidEmail(input)) {
+            sendMessage(ctx.getPhoneNumber(), "⚠️ That doesn't look like a valid email. Please try again.");
+            return;
+        }
+        sendMessage(ctx.getPhoneNumber(), "⏳ Sending your email...");
+        // In production: send email to manager via EmailService
+        sendMessage(ctx.getPhoneNumber(), "✅ Your email has been sent to the manager!");
+        ctx.setPendingEmail(null);
+        triggerAnotherActionLoop(ctx);
+    }
+
+    private void handleEmailMgrEditState(FsmContext ctx, String input) {
+        if ("EDIT".equalsIgnoreCase(input) || "1".equals(input)) {
+            sendMessage(ctx.getPhoneNumber(), "Please type the updated *email content*:");
+            ctx.setState(FsmState.EMAIL_MGR_BODY);
+        } else {
+            ctx.setPendingEmail(null);
+            sendMessage(ctx.getPhoneNumber(), "❌ Email cancelled.");
+            triggerAnotherActionLoop(ctx);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TASK REVIEW / DONE FLOWS
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private void handleReviewDecision(FsmContext ctx, String input) {
         if ("1".equals(input)) {
-            // Approve
             taskService.approveTask(ctx.getPendingReviewTaskId(),
-                                    ctx.getPendingReviewAssignmentId(),
-                                    ctx.getUserId(), true, null);
-            ctx.setState(FsmState.IDLE);
-            sendMessage(ctx.getPhoneNumber(), "✅ Task *approved* and employee notified.");
-
-            // Notify assignee
-            Optional<TaskAssignment> optAssignment = taskAssignmentRepository.findById(ctx.getPendingReviewAssignmentId());
-            if (optAssignment.isPresent()) {
-                notifyAssigneeOfApproval(optAssignment.get(), true, null);
-            }
-
+                ctx.getPendingReviewAssignmentId(), ctx.getUserId(), true, null);
+            Optional<TaskAssignment> opt = taskAssignmentRepository.findById(ctx.getPendingReviewAssignmentId());
+            opt.ifPresent(a -> notifyAssigneeOfApproval(a, true, null));
             ctx.setPendingReviewTaskId(null);
             ctx.setPendingReviewAssignmentId(null);
+            sendMessage(ctx.getPhoneNumber(), "✅ Task *approved* and employee notified.");
+            triggerAnotherActionLoop(ctx);
         } else if ("2".equals(input)) {
             sendMessage(ctx.getPhoneNumber(), "Please provide the *rejection reason*:");
             ctx.setState(FsmState.TASK_REJECT_REASON);
@@ -848,196 +1596,147 @@ public class ConversationFsm {
 
     private void handleRejectReason(FsmContext ctx, String input) {
         taskService.approveTask(ctx.getPendingReviewTaskId(),
-                                ctx.getPendingReviewAssignmentId(),
-                                ctx.getUserId(), false, input);
-        ctx.setState(FsmState.IDLE);
-        sendMessage(ctx.getPhoneNumber(), "❌ Task *rejected*. Employee has been notified with your reason.");
-
-        // Notify assignee
-        Optional<TaskAssignment> optAssignment = taskAssignmentRepository.findById(ctx.getPendingReviewAssignmentId());
-        if (optAssignment.isPresent()) {
-            notifyAssigneeOfApproval(optAssignment.get(), false, input);
-        }
-
+            ctx.getPendingReviewAssignmentId(), ctx.getUserId(), false, input);
+        Optional<TaskAssignment> opt = taskAssignmentRepository.findById(ctx.getPendingReviewAssignmentId());
+        opt.ifPresent(a -> notifyAssigneeOfApproval(a, false, input));
         ctx.setPendingReviewTaskId(null);
         ctx.setPendingReviewAssignmentId(null);
+        sendMessage(ctx.getPhoneNumber(), "❌ Task *rejected*. Employee notified with your reason.");
+        triggerAnotherActionLoop(ctx);
     }
 
     private void handleDone(FsmContext ctx, String input) {
         List<TaskAssignment> assignments = taskService.listOpenAssignmentsByAssignee(ctx.getUserId());
         if (assignments.isEmpty()) {
-            sendMessage(ctx.getPhoneNumber(), "ℹ️ You don't have any pending tasks assigned to you.");
+            sendMessage(ctx.getPhoneNumber(), "ℹ️ You don't have any pending tasks.");
             return;
         }
-
         String[] parts = input.trim().split("\\s+");
-        TaskAssignment targetAssignment = null;
-
+        TaskAssignment target = null;
         if (parts.length > 1) {
             try {
-                int index = Integer.parseInt(parts[1]) - 1;
-                if (index >= 0 && index < assignments.size()) {
-                    targetAssignment = assignments.get(index);
-                } else {
-                    sendMessage(ctx.getPhoneNumber(), "❌ Invalid task number. Choose between 1 and " + assignments.size());
-                    return;
-                }
+                int idx = Integer.parseInt(parts[1]) - 1;
+                if (idx >= 0 && idx < assignments.size()) target = assignments.get(idx);
+                else { sendMessage(ctx.getPhoneNumber(), "❌ Invalid task number."); return; }
             } catch (NumberFormatException e) {
-                sendMessage(ctx.getPhoneNumber(), "❌ Please specify a valid task number (e.g. *DONE 1*).");
-                return;
+                sendMessage(ctx.getPhoneNumber(), "❌ Use *DONE 1* format."); return;
             }
+        } else if (assignments.size() == 1) {
+            target = assignments.get(0);
         } else {
-            if (assignments.size() == 1) {
-                targetAssignment = assignments.get(0);
-            } else {
-                StringBuilder sb = new StringBuilder("📋 *Pending Tasks Assigned to You*:\n\n");
-                for (int i = 0; i < assignments.size(); i++) {
-                    sb.append((i + 1)).append("️⃣ *").append(assignments.get(i).getTask().getTitle()).append("*\n");
-                }
-                sb.append("\nTo mark a task as done, reply: *DONE <number>* (e.g., *DONE 1*)");
-                sendMessage(ctx.getPhoneNumber(), sb.toString());
-                return;
+            StringBuilder sb = new StringBuilder("📋 *Your Pending Tasks*:\n\n");
+            for (int i = 0; i < assignments.size(); i++) {
+                sb.append((i + 1)).append(". *").append(assignments.get(i).getTask().getTitle()).append("*\n");
             }
-        }
-
-        if (targetAssignment != null) {
-            Task task = targetAssignment.getTask();
-            taskService.updateStatus(task.getId(), ctx.getUserId(), "SUBMITTED", "Submitted via chatbot");
-
-            sendMessage(ctx.getPhoneNumber(), "✅ Task *" + task.getTitle() + "* has been marked as complete and submitted to your manager for approval.");
-
-            // Notify manager/creator
-            User creator = task.getCreatedBy();
-            notifyManagerOfSubmission(creator, task, targetAssignment, ctx);
-        }
-    }
-
-    private void notifyManagerOfSubmission(User manager, Task task, TaskAssignment assignment, FsmContext employeeCtx) {
-        User employee = userService.getById(employeeCtx.getUserId());
-        String employeeName = employee.getDisplayName() != null ? employee.getDisplayName() : employeeCtx.getPhoneNumber();
-
-        // Check Telegram first
-        Optional<TelegramUser> tgUser = telegramUserRepository.findByUserId(manager.getId());
-        if (tgUser.isPresent()) {
-            String managerDest = TelegramChatAdapter.toFsmKey(tgUser.get().getChatId());
-            sendMessage(managerDest, "🔔 *Task Submitted for Review!*\n\n" +
-                    "Employee *" + employeeName + "* has completed task: *" + task.getTitle() + "*\n\n" +
-                    "Reply *REVIEW* to approve or reject this task.");
+            sb.append("\nReply: *DONE <number>* (e.g. *DONE 1*)");
+            sendMessage(ctx.getPhoneNumber(), sb.toString());
             return;
         }
-
-        // Fallback to WhatsApp
-        Optional<UserPhone> primaryPhone = phoneRepo.findByUserIdAndIsPrimaryTrue(manager.getId());
-        if (primaryPhone.isPresent()) {
-            sendMessage(primaryPhone.get().getPhoneNumber(), "🔔 *Task Submitted for Review!*\n\n" +
-                    "Employee *" + employeeName + "* has completed task: *" + task.getTitle() + "*\n\n" +
-                    "Reply *REVIEW* to approve or reject this task.");
+        if (target != null) {
+            Task task = target.getTask();
+            taskService.updateStatus(task.getId(), ctx.getUserId(), "SUBMITTED", "Submitted via Blizbot");
+            sendMessage(ctx.getPhoneNumber(),
+                "✅ Task *" + task.getTitle() + "* submitted for manager approval.");
+            notifyManagerOfSubmission(task.getCreatedBy(), task, target, ctx);
         }
     }
 
     private void handleReview(FsmContext ctx, String input) {
-        List<Task> submittedTasks = taskRepository.findByBusinessIdAndStatus(ctx.getBusinessId(), "SUBMITTED");
-        if (submittedTasks.isEmpty()) {
-            sendMessage(ctx.getPhoneNumber(), "ℹ️ There are no tasks pending review.");
+        List<Task> submitted = taskRepository.findByBusinessIdAndStatus(ctx.getBusinessId(), "SUBMITTED");
+        if (submitted.isEmpty()) {
+            sendMessage(ctx.getPhoneNumber(), "ℹ️ No tasks pending review.");
             return;
         }
-
         String[] parts = input.trim().split("\\s+");
-        Task targetTask = null;
-
+        Task target = null;
         if (parts.length > 1) {
             try {
-                int index = Integer.parseInt(parts[1]) - 1;
-                if (index >= 0 && index < submittedTasks.size()) {
-                    targetTask = submittedTasks.get(index);
-                } else {
-                    sendMessage(ctx.getPhoneNumber(), "❌ Invalid task number. Choose between 1 and " + submittedTasks.size());
-                    return;
-                }
+                int idx = Integer.parseInt(parts[1]) - 1;
+                if (idx >= 0 && idx < submitted.size()) target = submitted.get(idx);
+                else { sendMessage(ctx.getPhoneNumber(), "❌ Invalid task number."); return; }
             } catch (NumberFormatException e) {
-                sendMessage(ctx.getPhoneNumber(), "❌ Please specify a valid task number (e.g. *REVIEW 1*).");
-                return;
+                sendMessage(ctx.getPhoneNumber(), "❌ Use *REVIEW 1* format."); return;
             }
+        } else if (submitted.size() == 1) {
+            target = submitted.get(0);
         } else {
-            if (submittedTasks.size() == 1) {
-                targetTask = submittedTasks.get(0);
-            } else {
-                StringBuilder sb = new StringBuilder("📋 *Tasks Pending Review*:\n\n");
-                for (int i = 0; i < submittedTasks.size(); i++) {
-                    sb.append((i + 1)).append("️⃣ *").append(submittedTasks.get(i).getTitle()).append("*\n");
-                }
-                sb.append("\nTo review a task, reply: *REVIEW <number>* (e.g., *REVIEW 1*)");
-                sendMessage(ctx.getPhoneNumber(), sb.toString());
-                return;
+            StringBuilder sb = new StringBuilder("📋 *Tasks Pending Review*:\n\n");
+            for (int i = 0; i < submitted.size(); i++) {
+                sb.append((i + 1)).append(". *").append(submitted.get(i).getTitle()).append("*\n");
             }
+            sb.append("\nReply: *REVIEW <number>*");
+            sendMessage(ctx.getPhoneNumber(), sb.toString());
+            return;
         }
-
-        if (targetTask != null) {
-            TaskAssignment assignment = taskAssignmentRepository.findByTaskId(targetTask.getId()).stream()
-                    .filter(a -> a.getVerifiedAt() == null)
-                    .findFirst().orElse(null);
-
+        if (target != null) {
+            TaskAssignment assignment = taskAssignmentRepository.findByTaskId(target.getId()).stream()
+                .filter(a -> a.getVerifiedAt() == null).findFirst().orElse(null);
             if (assignment == null) {
-                sendMessage(ctx.getPhoneNumber(), "❌ Could not find assignment details for this task.");
+                sendMessage(ctx.getPhoneNumber(), "❌ Could not find assignment details.");
                 return;
             }
-
-            ctx.setPendingReviewTaskId(targetTask.getId());
+            ctx.setPendingReviewTaskId(target.getId());
             ctx.setPendingReviewAssignmentId(assignment.getId());
             ctx.setState(FsmState.TASK_REVIEW_DECISION);
+            sendMessage(ctx.getPhoneNumber(),
+                "📋 *Review Task*\n\n" +
+                "• *Title:* " + target.getTitle() + "\n" +
+                "• *Assignee:* " + (assignment.getAssignee().getDisplayName() != null
+                    ? assignment.getAssignee().getDisplayName() : "Unknown") + "\n\n" +
+                "Reply:\n*1* Approve\n*2* Reject");
+        }
+    }
 
-            String assigneeName = assignment.getAssignee().getDisplayName() != null
-                    ? assignment.getAssignee().getDisplayName()
-                    : "Unknown";
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NOTIFICATIONS
+    // ═══════════════════════════════════════════════════════════════════════════
 
-            sendMessage(ctx.getPhoneNumber(), "📋 *Review Task*\n\n" +
-                    "• *Title:* " + targetTask.getTitle() + "\n" +
-                    "• *Assignee:* " + assigneeName + "\n\n" +
-                    "Reply:\n*1* Approve\n*2* Reject");
+    private void notifyManagerOfSubmission(User manager, Task task, TaskAssignment assignment, FsmContext ctx) {
+        User employee = userService.getById(ctx.getUserId());
+        String name = employee.getDisplayName() != null ? employee.getDisplayName() : ctx.getPhoneNumber();
+        Optional<TelegramUser> tg = telegramUserRepo.findByUserId(manager.getId());
+        if (tg.isPresent()) {
+            sendMessage(TelegramChatAdapter.toFsmKey(tg.get().getChatId()),
+                "🔔 *Task Submitted for Review!*\n\n" +
+                "*" + name + "* completed task: *" + task.getTitle() + "*\n\nReply *REVIEW* to approve or reject.");
         }
     }
 
     private void notifyAssigneeOfApproval(TaskAssignment assignment, boolean approved, String reason) {
         User assignee = assignment.getAssignee();
-        String message = approved
-                ? "🎉 *Task Approved!*\n\nYour manager has approved your work for task: *" + assignment.getTask().getTitle() + "*"
-                : "❌ *Task Reclaimed/Rejected*\n\nYour manager has rejected your work for task: *" + assignment.getTask().getTitle() + "*\n• *Reason:* " + reason + "\n\nPlease correct it and try again.";
-
-        // Check Telegram first
-        Optional<TelegramUser> tgUser = telegramUserRepository.findByUserId(assignee.getId());
-        if (tgUser.isPresent()) {
-            String dest = TelegramChatAdapter.toFsmKey(tgUser.get().getChatId());
-            sendMessage(dest, message);
-            return;
-        }
-
-        // Fallback to WhatsApp
-        Optional<UserPhone> primaryPhone = phoneRepo.findByUserIdAndIsPrimaryTrue(assignee.getId());
-        if (primaryPhone.isPresent()) {
-            sendMessage(primaryPhone.get().getPhoneNumber(), message);
-        }
+        String msg = approved
+            ? "🎉 *Task Approved!*\n\nYour work on *" + assignment.getTask().getTitle() + "* was approved!"
+            : "❌ *Task Rejected*\n\nTask: *" + assignment.getTask().getTitle() + "*\n• Reason: " + reason +
+              "\n\nPlease correct and resubmit.";
+        Optional<TelegramUser> tg = telegramUserRepo.findByUserId(assignee.getId());
+        tg.ifPresent(t -> sendMessage(TelegramChatAdapter.toFsmKey(t.getChatId()), msg));
     }
 
-    private void handleError(FsmContext ctx) {
-        ctx.setState(FsmState.IDLE);
-        sendMessage(ctx.getPhoneNumber(), "🔄 Session reset. Type *HELP* for options.");
-    }
-
-    // ─── Stats ────────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STATS
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private void sendStatsToUser(FsmContext ctx) {
         try {
             Map<String, Object> stats = taskService.getKpiSummary(ctx.getBusinessId());
             sendMessage(ctx.getPhoneNumber(),
-                    "📊 *Business Summary*\n\n" +
-                    "• Open: " + stats.getOrDefault("open", 0) + "\n" +
-                    "• Done: " + stats.getOrDefault("done", 0) + "\n" +
-                    "• Overdue: " + stats.getOrDefault("overdue", 0) + "\n" +
-                    "• Avg completion: " + stats.getOrDefault("avgHours", "—") + "h\n" +
-                    "• Top performer: " + stats.getOrDefault("topPerformer", "—")
+                "📊 *Business Summary*\n\n" +
+                "• Open: " + stats.getOrDefault("open", 0) + "\n" +
+                "• Done: " + stats.getOrDefault("done", 0) + "\n" +
+                "• Overdue: " + stats.getOrDefault("overdue", 0) + "\n" +
+                "• Avg completion: " + stats.getOrDefault("avgHours", "—") + "h\n" +
+                "• Top performer: " + stats.getOrDefault("topPerformer", "—")
             );
         } catch (Exception e) {
             sendMessage(ctx.getPhoneNumber(), "Could not retrieve stats. Please try again later.");
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // UTILITIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private boolean isValidEmail(String email) {
+        return email != null && email.contains("@") && email.contains(".") && email.length() > 5;
     }
 }

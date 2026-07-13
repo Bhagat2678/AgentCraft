@@ -47,7 +47,7 @@ public class BusinessController {
 
         Business business = businessService.create(
                 req.getName(), req.getType(), req.getIndustry(),
-                req.getLocation(), req.getBasePolicies(), req.getWabaPhoneId()
+                req.getLocation(), req.getBasePolicies()
         );
 
         // Seed the 5 default roles for this new business

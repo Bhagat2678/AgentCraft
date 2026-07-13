@@ -33,9 +33,6 @@ public class Attachment {
     @Column(name = "size_bytes")
     private Long sizeBytes;
 
-    @Column(name = "whatsapp_media_id", length = 200)
-    private String whatsappMediaId;
-
     @Column(name = "telegram_file_id", length = 200)
     private String telegramFileId;
 
@@ -60,8 +57,6 @@ public class Attachment {
     public void setMimeType(String mimeType) { this.mimeType = mimeType; }
     public Long getSizeBytes() { return sizeBytes; }
     public void setSizeBytes(Long sizeBytes) { this.sizeBytes = sizeBytes; }
-    public String getWhatsappMediaId() { return whatsappMediaId; }
-    public void setWhatsappMediaId(String whatsappMediaId) { this.whatsappMediaId = whatsappMediaId; }
     public String getTelegramFileId() { return telegramFileId; }
     public void setTelegramFileId(String telegramFileId) { this.telegramFileId = telegramFileId; }
     public OffsetDateTime getCreatedAt() { return createdAt; }
