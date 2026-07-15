@@ -157,6 +157,12 @@ public class TelegramWebhookController {
 
         } catch (Exception e) {
             log.error("Error processing Telegram message: {}", e.getMessage(), e);
+            try {
+                Long chatId = message.get("chat").get("id").asLong();
+                telegramChatAdapter.sendText(chatId, "⚠️ *An unexpected error occurred.* Please try again or type /menu.");
+            } catch (Exception ex) {
+                log.error("Failed to send error notification: {}", ex.getMessage());
+            }
         }
     }
 
@@ -185,6 +191,12 @@ public class TelegramWebhookController {
 
         } catch (Exception e) {
             log.error("Error processing Telegram callback query: {}", e.getMessage(), e);
+            try {
+                Long chatId = callbackQuery.get("message").get("chat").get("id").asLong();
+                telegramChatAdapter.sendText(chatId, "⚠️ *An unexpected error occurred.* Please try again or type /menu.");
+            } catch (Exception ex) {
+                log.error("Failed to send error notification: {}", ex.getMessage());
+            }
         }
     }
 

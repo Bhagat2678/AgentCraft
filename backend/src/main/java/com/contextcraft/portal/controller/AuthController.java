@@ -88,6 +88,34 @@ public class AuthController {
     }
 
     /**
+     * POST /api/v1/auth/login
+     * Authenticates a user by email, business name, and portal password.
+     *
+     * Request: { "email": "...", "businessName": "...", "password": "..." }
+     * Response: { "accessToken": "eyJ..." }
+     */
+    @PostMapping("/login")
+    public ResponseEntity<?> login(@RequestBody Map<String, String> body) {
+        String email = body.get("email");
+        String businessName = body.get("businessName");
+        String password = body.get("password");
+
+        if (email == null || businessName == null || password == null) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("error", "email, businessName, and password are required"));
+        }
+
+        try {
+            User user = userService.loginByEmailAndPortalName(email, businessName, password);
+            String jwt = jwtUtils.generateToken(user.getId(), user.getBusiness().getId());
+            return ResponseEntity.ok(Map.of("accessToken", jwt));
+        } catch (Exception e) {
+            return ResponseEntity.status(401)
+                    .body(Map.of("error", "Authentication failed: " + e.getMessage()));
+        }
+    }
+
+    /**
      * POST /api/v1/auth/telegram
      * Authenticates a Telegram Mini App session using WebApp initData.
      *

@@ -14,6 +14,4 @@ public interface BusinessRepository extends JpaRepository<Business, UUID> {
     Optional<Business> findByIdAndDeletedAtIsNull(UUID id);
 
     List<Business> findAllByDeletedAtIsNull();
-
-    Optional<Business> findByWabaPhoneId(String wabaPhoneId);
 }

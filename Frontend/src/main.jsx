@@ -85,7 +85,7 @@ function App() {
   const [setupStep, setSetupStep] = React.useState(0);
   const [screen, setScreen] = React.useState('overview');
   const [role, setRole] = React.useState('CEO');
-  const [toast, setToast] = React.useState('Telegram Mini App ready.');
+  const [toast, setToast] = React.useState('');
   
   // API State
   const [jwt, setJwt] = React.useState(sessionStorage.getItem('jwt_token') || '');
@@ -94,12 +94,24 @@ function App() {
   const [tasks, setTasks] = React.useState([]);
   const [employees, setEmployees] = React.useState([]);
   const [availableRoles, setAvailableRoles] = React.useState([]);
+  const [availableDepartments, setAvailableDepartments] = React.useState([]);
   const [analytics, setAnalytics] = React.useState(null);
   
-  // Modals / Inputs
+  // Login inputs
+  const [loginMethod, setLoginMethod] = React.useState('portal');
+  const [emailInput, setEmailInput] = React.useState('');
+  const [businessNameInput, setBusinessNameInput] = React.useState('');
+  const [passwordInput, setPasswordInput] = React.useState('');
   const [phoneNumberInput, setPhoneNumberInput] = React.useState('');
   const [inviteTokenInput, setInviteTokenInput] = React.useState('');
   const [loading, setLoading] = React.useState(false);
+
+  // Auto-dismiss toast after 4s
+  React.useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(''), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   // Auto-init Telegram WebApp
   React.useEffect(() => {
@@ -178,66 +190,57 @@ function App() {
   const loadDashboardData = (businessId, token) => {
     const headers = { 'Authorization': `Bearer ${token}` };
     
-    // Get Business Details
     fetch(`/api/v1/businesses/${businessId}`, { headers })
-      .then(res => res.json())
-      .then(data => setBusiness(data))
-      .catch(console.error);
-
-    // Get Tasks
+      .then(res => res.json()).then(data => setBusiness(data)).catch(console.error);
     fetch(`/api/v1/businesses/${businessId}/tasks`, { headers })
-      .then(res => res.json())
-      .then(data => setTasks(data))
-      .catch(console.error);
-
-    // Get Users / Employees
+      .then(res => res.json()).then(data => setTasks(data)).catch(console.error);
     fetch(`/api/v1/businesses/${businessId}/users`, { headers })
-      .then(res => res.json())
-      .then(data => setEmployees(data))
-      .catch(console.error);
-
-    // Get Roles
+      .then(res => res.json()).then(data => setEmployees(data)).catch(console.error);
     fetch(`/api/v1/businesses/${businessId}/roles`, { headers })
-      .then(res => res.json())
-      .then(data => setAvailableRoles(data))
-      .catch(console.error);
-
-    // Get Analytics
+      .then(res => res.json()).then(data => setAvailableRoles(data)).catch(console.error);
+    fetch(`/api/v1/businesses/${businessId}/departments`, { headers })
+      .then(res => res.json()).then(data => setAvailableDepartments(data)).catch(console.error);
     fetch(`/api/v1/businesses/${businessId}/analytics`, { headers })
-      .then(res => res.json())
-      .then(data => setAnalytics(data))
-      .catch(console.error);
+      .then(res => res.json()).then(data => setAnalytics(data)).catch(console.error);
+  };
+
+  const handlePortalLogin = (e) => {
+    e.preventDefault();
+    if (!emailInput.trim() || !businessNameInput.trim() || !passwordInput.trim()) {
+      setToast('All fields are required.');
+      return;
+    }
+    setLoading(true);
+    fetch('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: emailInput.trim(), businessName: businessNameInput.trim(), password: passwordInput.trim() })
+    })
+    .then(res => { if (!res.ok) throw new Error('Invalid credentials. Check email, company name, and password.'); return res.json(); })
+    .then(data => { setJwt(data.accessToken); sessionStorage.setItem('jwt_token', data.accessToken); })
+    .catch(err => setToast(err.message))
+    .finally(() => setLoading(false));
   };
 
   const handleManualLogin = (e) => {
     e.preventDefault();
-    setLoading(true);
-    setToast('Logging in...');
-
     const body = {};
     if (inviteTokenInput.trim()) {
       body.token = inviteTokenInput.trim();
     } else if (phoneNumberInput.trim()) {
       body.phoneNumber = phoneNumberInput.trim();
     } else {
-      setToast('Enter phone number or invite token');
-      setLoading(false);
+      setToast('Enter phone number or invite token.');
       return;
     }
-
+    setLoading(true);
     fetch('/api/v1/auth/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     })
-    .then(res => {
-      if (!res.ok) throw new Error('Invalid credentials');
-      return res.json();
-    })
-    .then(data => {
-      setJwt(data.accessToken);
-      sessionStorage.setItem('jwt_token', data.accessToken);
-    })
+    .then(res => { if (!res.ok) throw new Error('Invalid credentials.'); return res.json(); })
+    .then(data => { setJwt(data.accessToken); sessionStorage.setItem('jwt_token', data.accessToken); })
     .catch(err => setToast(err.message))
     .finally(() => setLoading(false));
   };
@@ -326,6 +329,7 @@ function App() {
     setTasks([]);
     setEmployees([]);
     setAvailableRoles([]);
+    setAvailableDepartments([]);
     setAnalytics(null);
     sessionStorage.removeItem('jwt_token');
     setPhase('start');
@@ -346,37 +350,65 @@ function App() {
             <div className="bot-message">
               <Icon name="Send" />
               <div>
-                <p>Welcome to BizPortal on Telegram.</p>
-                <p>Access your workspace using your phone number or invite token.</p>
+                <p>Welcome to AgentCraft on Telegram.</p>
+                <p>Sign in with your portal credentials or phone/invite token.</p>
               </div>
             </div>
 
             <section className="panel compact">
-              <h1>Sign In</h1>
-              <form onSubmit={handleManualLogin} className="action-stack" style={{ marginTop: '16px' }}>
-                <label>
-                  <span>Phone Number</span>
-                  <input
-                    type="tel"
-                    placeholder="+15550001234"
-                    value={phoneNumberInput}
-                    onChange={(e) => setPhoneNumberInput(e.target.value)}
-                  />
-                </label>
-                <div style={{ textAlign: 'center', margin: '8px 0', color: 'var(--muted)', fontSize: '12px' }}>— OR —</div>
-                <label>
-                  <span>Invite Token</span>
-                  <input
-                    type="text"
-                    placeholder="Enter registration/invite token"
-                    value={inviteTokenInput}
-                    onChange={(e) => setInviteTokenInput(e.target.value)}
-                  />
-                </label>
-                <button type="submit" className="primary" style={{ marginTop: '12px' }} disabled={loading}>
-                  {loading ? 'Signing In...' : 'Verify & Access Portal'}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '18px' }}>
+                <button
+                  type="button"
+                  className={loginMethod === 'portal' ? 'primary' : ''}
+                  onClick={() => setLoginMethod('portal')}
+                  style={{ padding: '8px', borderRadius: '8px', fontSize: '13px' }}
+                >
+                  Portal Login
                 </button>
-              </form>
+                <button
+                  type="button"
+                  className={loginMethod === 'phone' ? 'primary' : ''}
+                  onClick={() => setLoginMethod('phone')}
+                  style={{ padding: '8px', borderRadius: '8px', fontSize: '13px' }}
+                >
+                  Phone / Invite
+                </button>
+              </div>
+
+              {loginMethod === 'portal' ? (
+                <form onSubmit={handlePortalLogin} className="action-stack">
+                  <label>
+                    <span>Email Address *</span>
+                    <input type="email" required placeholder="you@company.com" value={emailInput} onChange={e => setEmailInput(e.target.value)} />
+                  </label>
+                  <label>
+                    <span>Company Name *</span>
+                    <input type="text" required placeholder="e.g. MINIONS" value={businessNameInput} onChange={e => setBusinessNameInput(e.target.value)} />
+                  </label>
+                  <label>
+                    <span>Password *</span>
+                    <input type="password" required placeholder="••••••••" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} />
+                  </label>
+                  <button type="submit" className="primary" style={{ marginTop: '12px' }} disabled={loading}>
+                    {loading ? 'Authenticating...' : 'Login to Workspace'}
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={handleManualLogin} className="action-stack">
+                  <label>
+                    <span>Phone Number</span>
+                    <input type="tel" placeholder="+15550001234" value={phoneNumberInput} onChange={e => setPhoneNumberInput(e.target.value)} />
+                  </label>
+                  <div style={{ textAlign: 'center', margin: '8px 0', color: 'var(--muted)', fontSize: '12px' }}>— OR —</div>
+                  <label>
+                    <span>Invite Token</span>
+                    <input type="text" placeholder="Enter registration/invite token" value={inviteTokenInput} onChange={e => setInviteTokenInput(e.target.value)} />
+                  </label>
+                  <button type="submit" className="primary" style={{ marginTop: '12px' }} disabled={loading}>
+                    {loading ? 'Signing In...' : 'Verify & Access Portal'}
+                  </button>
+                </form>
+              )}
             </section>
           </section>
         )}
@@ -393,6 +425,7 @@ function App() {
             employees={employees}
             business={business}
             availableRoles={availableRoles}
+            availableDepartments={availableDepartments}
             analytics={analytics}
             onTaskAction={handleTaskAction}
             onCreateTask={handleCreateTask}
@@ -412,7 +445,7 @@ function App() {
 }
 
 function TelegramHeader({ phase, screen, loading, onBack }) {
-  const title = phase === 'dashboard' ? navItems.find((item) => item.id === screen)?.label : 'BizPortal';
+  const title = phase === 'dashboard' ? navItems.find((item) => item.id === screen)?.label : 'AgentCraft';
 
   return (
     <header className="tg-header">
@@ -441,6 +474,7 @@ function Dashboard({
   employees,
   business,
   availableRoles,
+  availableDepartments,
   analytics,
   onTaskAction,
   onCreateTask,
@@ -462,7 +496,7 @@ function Dashboard({
         {screen === 'overview' && <OverviewScreen tasks={tasks} business={business} employees={employees} />}
         {screen === 'analytics' && <AnalyticsScreen analytics={analytics} />}
         {screen === 'tasks' && <TasksScreen role={role} tasks={tasks} employees={employees} onTaskAction={onTaskAction} onCreateTask={onCreateTask} />}
-        {screen === 'employees' && <DirectoryScreen title="Employees" employees={employees} availableRoles={availableRoles} onInviteUser={onInviteUser} />}
+        {screen === 'employees' && <DirectoryScreen title="Employees" employees={employees} availableRoles={availableRoles} availableDepartments={availableDepartments} onInviteUser={onInviteUser} />}
         {screen === 'profile' && <ProfileScreen user={user} />}
       </div>
 
@@ -488,7 +522,7 @@ function OverviewScreen({ tasks, business, employees }) {
         <Metric title="Open Tasks" value={openTasks} desc="Awaiting completion" />
         <Metric title="Pending Approvals" value={pendingApprovals} desc="Awaiting manager review" />
         <Metric title="Total Team Members" value={employees.length} desc="Active staff" />
-        <Metric title="Company Name" value={business ? business.name : 'BizPortal'} desc={business ? business.industry : 'Loading...'} />
+        <Metric title="Company Name" value={business ? business.name : 'AgentCraft'} desc={business ? business.industry : 'Loading...'} />
       </div>
       <Section title="Business Workspaces">
         <div className="resource-grid" style={{ marginTop: '14px' }}>
@@ -639,21 +673,27 @@ function TasksScreen({ role, tasks, employees, onTaskAction, onCreateTask }) {
   );
 }
 
-function DirectoryScreen({ title, employees, availableRoles, onInviteUser }) {
+function DirectoryScreen({ title, employees, availableRoles, availableDepartments, onInviteUser }) {
   const [showInvite, setShowInvite] = React.useState(false);
   const [phone, setPhone] = React.useState('');
+  const [displayName, setDisplayName] = React.useState('');
   const [roleId, setRoleId] = React.useState('');
+  const [departmentId, setDepartmentId] = React.useState('');
 
   const submitInvite = (e) => {
     e.preventDefault();
     if (!phone || !roleId) return;
     onInviteUser({
       phoneNumber: phone,
-      roleId
+      displayName: displayName || null,
+      roleId,
+      departmentId: departmentId || null
     });
     setShowInvite(false);
     setPhone('');
+    setDisplayName('');
     setRoleId('');
+    setDepartmentId('');
   };
 
   return (
@@ -662,9 +702,7 @@ function DirectoryScreen({ title, employees, availableRoles, onInviteUser }) {
       action={showInvite ? 'Cancel' : 'Invite User'}
       onActionClick={() => {
         setShowInvite(!showInvite);
-        if (availableRoles.length > 0 && !roleId) {
-          setRoleId(availableRoles[0].id);
-        }
+        if (availableRoles.length > 0 && !roleId) setRoleId(availableRoles[0].id);
       }}
     >
       {showInvite && (
@@ -674,10 +712,24 @@ function DirectoryScreen({ title, employees, availableRoles, onInviteUser }) {
             <input type="tel" required placeholder="+15550001234" value={phone} onChange={e => setPhone(e.target.value)} />
           </label>
           <label>
+            <span>Display Name</span>
+            <input type="text" placeholder="Full name (optional)" value={displayName} onChange={e => setDisplayName(e.target.value)} />
+          </label>
+          <label>
             <span>Role *</span>
-            <select value={roleId} onChange={e => setRoleId(e.target.value)}>
+            <select required value={roleId} onChange={e => setRoleId(e.target.value)}>
+              <option value="">— Select a role —</option>
               {availableRoles.map(r => (
                 <option key={r.id} value={r.id}>{r.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Department</span>
+            <select value={departmentId} onChange={e => setDepartmentId(e.target.value)}>
+              <option value="">— No department —</option>
+              {availableDepartments.map(d => (
+                <option key={d.id} value={d.id}>{d.name}</option>
               ))}
             </select>
           </label>

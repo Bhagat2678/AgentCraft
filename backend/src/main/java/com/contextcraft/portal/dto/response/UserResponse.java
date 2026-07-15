@@ -20,6 +20,7 @@ public class UserResponse {
     private String status;
     private String primaryPhone;
     private List<String> roleNames;
+    private List<String> departmentNames;
     private OffsetDateTime createdAt;
 
     public static UserResponse from(User u) {
@@ -42,6 +43,11 @@ public class UserResponse {
             r.roleNames = u.getUserRoles().stream()
                     .map(ur -> ur.getRole().getName())
                     .collect(Collectors.toList());
+
+            r.departmentNames = u.getUserRoles().stream()
+                    .map(ur -> ur.getDepartment() != null ? ur.getDepartment().getName() : "General")
+                    .distinct()
+                    .collect(Collectors.toList());
         }
 
         return r;
@@ -54,5 +60,6 @@ public class UserResponse {
     public String getStatus() { return status; }
     public String getPrimaryPhone() { return primaryPhone; }
     public List<String> getRoleNames() { return roleNames; }
+    public List<String> getDepartmentNames() { return departmentNames; }
     public OffsetDateTime getCreatedAt() { return createdAt; }
 }

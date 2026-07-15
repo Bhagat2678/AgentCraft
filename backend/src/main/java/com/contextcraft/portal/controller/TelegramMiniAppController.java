@@ -35,7 +35,7 @@ public class TelegramMiniAppController {
 
     private static final Logger log = LoggerFactory.getLogger(TelegramMiniAppController.class);
 
-    @Value("${telegram.bot.token}")
+    @Value("${app.telegram.bot-token:REPLACE_ME}")
     private String botToken;
 
     private final TelegramUserRepository telegramUserRepo;

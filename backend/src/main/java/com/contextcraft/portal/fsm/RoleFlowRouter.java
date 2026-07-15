@@ -312,7 +312,7 @@ public class RoleFlowRouter {
     public void sendRoleTrackMenu(FsmContext ctx) {
         String btype = orDefault(ctx.getBusinessType(), "RETAIL");
         String role  = orDefault(ctx.getUserRole(), "EMPLOYEE");
-        String greeting = "👋 Hi! I'm *Blizbot*, your personal assistant.\n\nHow may I help you today?";
+        String greeting = "👋 Hi! I'm *AgentCraft*, your personal assistant.\n\nHow may I help you today?";
 
         List<List<Map<String, String>>> kb = switch (btype + "_" + role) {
             case "RETAIL_CEO" -> List.of(

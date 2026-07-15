@@ -56,7 +56,12 @@ public class RedisConversationStore {
         return dbRepo.findById(phoneNumber).map(dbState -> {
             FsmContext ctx = new FsmContext();
             ctx.setPhoneNumber(phoneNumber);
-            ctx.setState(FsmState.valueOf(dbState.getCurrentState()));
+            try {
+                ctx.setState(FsmState.valueOf(dbState.getCurrentState()));
+            } catch (IllegalArgumentException e) {
+                log.warn("Invalid legacy state '{}' found for {} in DB. Resetting to NEW.", dbState.getCurrentState(), phoneNumber);
+                ctx.setState(FsmState.NEW);
+            }
             ctx.setBusinessId(dbState.getBusinessId());
             ctx.setUserId(dbState.getUserId());
             if (dbState.getContext() != null) {

@@ -22,7 +22,7 @@ import java.util.*;
  *  - Master flow skeleton: returning user fast-path vs new user setup
  *  - Multi-business /switch support (CEO linked to multiple portals)
  *  - Universal end-of-action loop: "Is there anything else?" → Exit Check
- *  - Portal setup wizard (BLIZBOT style: name → username → company → ...)
+ *  - Portal setup wizard (AgentCraft style: name → username → company → ...)
  *  - Portal login flow
  *  - All existing task/invite/review flows preserved and wired to new states
  */
@@ -321,6 +321,7 @@ public class ConversationFsm {
                 sendMessage(ctx.getPhoneNumber(), "❌ Cancelled. No changes were made.");
                 ctx.setState(ctx.getUserId() != null ? FsmState.IDLE : FsmState.NEW);
                 if (ctx.getUserId() != null) sendRoleMenu(ctx);
+                else sendWelcome(ctx);
                 return true;
             }
             case "BACK", "← BACK" -> {
@@ -328,6 +329,7 @@ public class ConversationFsm {
                 if (prev != null) {
                     ctx.setState(prev);
                     sendMessage(ctx.getPhoneNumber(), "↩️ Going back...");
+                    sendStatePrompt(ctx);
                 } else {
                     sendMessage(ctx.getPhoneNumber(), "Nothing to go back to. Type /menu to return to the main menu.");
                 }
@@ -379,15 +381,18 @@ public class ConversationFsm {
 
         // Handle button tap on welcome message
         if ("1".equals(input) || "CREATE".equalsIgnoreCase(input)) {
-            sendMessage(ctx.getPhoneNumber(),
-                "👋 Hi! I'm *Blizbot*, your personal assistant.\n\nLet's create your new portal.\n\n*Please enter your name.*");
+            sendMenu(ctx.getPhoneNumber(),
+                "👋 Hi! I'm *AgentCraft*, your personal assistant.\n\nLet's create your new portal.\n\n*Please enter your name.*",
+                List.of(List.of(TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
             ctx.setState(FsmState.SETUP_NAME);
         } else if ("2".equals(input) || "LOGIN".equalsIgnoreCase(input)) {
-            sendMessage(ctx.getPhoneNumber(), "🔐 *Log In to an Existing Portal*\n\nPlease enter your *username*.");
+            sendMenu(ctx.getPhoneNumber(), "🔐 *Log In to an Existing Portal*\n\nPlease enter your *username*.",
+                List.of(List.of(TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
             ctx.setState(FsmState.LOGIN_USERNAME);
         } else if ("3".equals(input) || "INVITE".equalsIgnoreCase(input) || "ACCEPT".equalsIgnoreCase(input)) {
-            sendMessage(ctx.getPhoneNumber(),
-                "🎟️ Please enter the *invite token* you received to join your business portal:");
+            sendMenu(ctx.getPhoneNumber(),
+                "🎟️ Please enter the *invite token* you received to join your business portal:",
+                List.of(List.of(TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
             ctx.setState(FsmState.ACCEPT_INVITE_TOKEN);
         } else {
             sendWelcome(ctx);
@@ -405,7 +410,7 @@ public class ConversationFsm {
             )
         );
         sendMenu(ctx.getPhoneNumber(),
-            "👋 Hi! I'm *Blizbot*, your personal business assistant.\n\n" +
+            "👋 Hi! I'm *AgentCraft*, your personal business assistant.\n\n" +
             "How may I help you today?",
             keyboard);
     }
@@ -416,48 +421,56 @@ public class ConversationFsm {
 
     private void handleSetupName(FsmContext ctx, String input) {
         if (input.length() < 2) {
-            sendMessage(ctx.getPhoneNumber(), "Please enter your *full name* (at least 2 characters).");
+            sendMenu(ctx.getPhoneNumber(), "Please enter your *full name* (at least 2 characters).",
+                List.of(List.of(TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
             return;
         }
         ctx.pushHistory();
         ctx.getExtras().put("ceo_name", input);
-        sendMessage(ctx.getPhoneNumber(), "Please enter your *username*.\n\n_(← Back at any time)_");
+        sendMenu(ctx.getPhoneNumber(), "Please enter your *username*.\n\n_(← Back at any time)_",
+            List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
         ctx.setState(FsmState.SETUP_USERNAME);
     }
 
     private void handleSetupUsername(FsmContext ctx, String input) {
         if (input.length() < 3) {
-            sendMessage(ctx.getPhoneNumber(), "Username must be at least 3 characters. Please try again.");
+            sendMenu(ctx.getPhoneNumber(), "Username must be at least 3 characters. Please try again.",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
             return;
         }
         ctx.pushHistory();
         ctx.getExtras().put("ceo_username", input);
-        sendMessage(ctx.getPhoneNumber(), "Please enter your *company name*.");
+        sendMenu(ctx.getPhoneNumber(), "Please enter your *company name*.",
+            List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
         ctx.setState(FsmState.SETUP_BNAME);
     }
 
     private void handleSetupBname(FsmContext ctx, String input) {
         if (input.length() < 2) {
-            sendMessage(ctx.getPhoneNumber(), "Please enter a valid *company name* (at least 2 characters).");
+            sendMenu(ctx.getPhoneNumber(), "Please enter a valid *company name* (at least 2 characters).",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
             return;
         }
         ctx.pushHistory();
         ctx.getExtras().put("bname", input);
-        sendMessage(ctx.getPhoneNumber(), "Please enter your *company business* (industry or sector, e.g. Retail, Tech, Services).");
+        sendMenu(ctx.getPhoneNumber(), "Please enter your *company business* (industry or sector, e.g. Retail, Tech, Services).",
+            List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
         ctx.setState(FsmState.SETUP_BBUSINESS);
     }
 
     private void handleSetupBbusiness(FsmContext ctx, String input) {
         ctx.pushHistory();
         ctx.getExtras().put("bbusiness", input);
-        sendMessage(ctx.getPhoneNumber(), "Please enter a *company description*.");
+        sendMenu(ctx.getPhoneNumber(), "Please enter a *company description*.",
+            List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
         ctx.setState(FsmState.SETUP_BDESC);
     }
 
     private void handleSetupBdesc(FsmContext ctx, String input) {
         ctx.pushHistory();
         ctx.getExtras().put("bdesc", input);
-        sendMessage(ctx.getPhoneNumber(), "Please enter your *number of employees* (e.g. 25).");
+        sendMenu(ctx.getPhoneNumber(), "Please enter your *number of employees* (e.g. 25).",
+            List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
         ctx.setState(FsmState.SETUP_EMP_COUNT);
     }
 
@@ -467,21 +480,25 @@ public class ConversationFsm {
             if (n <= 0) throw new NumberFormatException();
             ctx.pushHistory();
             ctx.getExtras().put("emp_count", String.valueOf(n));
-            sendMessage(ctx.getPhoneNumber(), "Please enter your *email address*.");
+            sendMenu(ctx.getPhoneNumber(), "Please enter your *email address*.",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
             ctx.setState(FsmState.SETUP_EMAIL);
         } catch (NumberFormatException e) {
-            sendMessage(ctx.getPhoneNumber(), "⚠️ Please enter a valid positive *number* of employees.");
+            sendMenu(ctx.getPhoneNumber(), "⚠️ Please enter a valid positive *number* of employees.",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
         }
     }
 
     private void handleSetupEmail(FsmContext ctx, String input) {
         if (!isValidEmail(input)) {
-            sendMessage(ctx.getPhoneNumber(), "⚠️ That doesn't look like a valid email. Please try again.");
+            sendMenu(ctx.getPhoneNumber(), "⚠️ That doesn't look like a valid email. Please try again.",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
             return;
         }
         ctx.pushHistory();
         ctx.getExtras().put("ceo_email", input);
-        sendMessage(ctx.getPhoneNumber(), "Please enter the *number of departments* in your company (e.g. 3).");
+        sendMenu(ctx.getPhoneNumber(), "Please enter the *number of departments* in your company (e.g. 3).",
+            List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
         ctx.setState(FsmState.SETUP_DEPT_COUNT);
     }
 
@@ -492,11 +509,13 @@ public class ConversationFsm {
             ctx.pushHistory();
             ctx.getExtras().put("dept_count", String.valueOf(n));
             ctx.getExtras().put("dept_collected", "0");
-            sendMessage(ctx.getPhoneNumber(),
-                "You have *" + n + " department(s)* to enter.\n\nPlease enter the name of *Department 1*:");
+            sendMenu(ctx.getPhoneNumber(),
+                "You have *" + n + " department(s)* to enter.\n\nPlease enter the name of *Department 1*:",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
             ctx.setState(FsmState.SETUP_DEPT_NAMES);
         } catch (NumberFormatException e) {
-            sendMessage(ctx.getPhoneNumber(), "⚠️ Please enter a valid positive *number* of departments.");
+            sendMenu(ctx.getPhoneNumber(), "⚠️ Please enter a valid positive *number* of departments.",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
         }
     }
 
@@ -509,19 +528,22 @@ public class ConversationFsm {
         ctx.getExtras().put("dept_collected", String.valueOf(collected));
 
         if (collected < total) {
-            sendMessage(ctx.getPhoneNumber(),
-                "Got it! Please enter the name of *Department " + (collected + 1) + "*:");
+            sendMenu(ctx.getPhoneNumber(),
+                "Got it! Please enter the name of *Department " + (collected + 1) + "*:",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
         } else {
             // All department names collected — proceed to password
-            sendMessage(ctx.getPhoneNumber(),
-                "✅ All department names collected!\n\nNow, please enter your *company portal password*.");
+            sendMenu(ctx.getPhoneNumber(),
+                "✅ All department names collected!\n\nNow, please enter your *company portal password*.",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
             ctx.setState(FsmState.SETUP_PASSWORD);
         }
     }
 
     private void handleSetupPassword(FsmContext ctx, String input) {
         if (input.length() < 6) {
-            sendMessage(ctx.getPhoneNumber(), "⚠️ Password must be at least 6 characters. Please try again.");
+            sendMenu(ctx.getPhoneNumber(), "⚠️ Password must be at least 6 characters. Please try again.",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
             return;
         }
         ctx.pushHistory();
@@ -531,6 +553,10 @@ public class ConversationFsm {
             List.of(
                 TelegramChatAdapter.button("✅ Yes, it's correct", "YES"),
                 TelegramChatAdapter.button("❌ No, re-enter", "NO")
+            ),
+            List.of(
+                TelegramChatAdapter.button("↩️ Back", "BACK"),
+                TelegramChatAdapter.button("❌ Cancel", "CANCEL")
             )
         );
         sendMenu(ctx.getPhoneNumber(),
@@ -549,6 +575,10 @@ public class ConversationFsm {
                 ),
                 List.of(
                     TelegramChatAdapter.button("💻 Tech / Software", "TECH")
+                ),
+                List.of(
+                    TelegramChatAdapter.button("↩️ Back", "BACK"),
+                    TelegramChatAdapter.button("❌ Cancel", "CANCEL")
                 )
             );
             sendMenu(ctx.getPhoneNumber(),
@@ -556,7 +586,8 @@ public class ConversationFsm {
                 keyboard);
             ctx.setState(FsmState.SETUP_BTYPE);
         } else {
-            sendMessage(ctx.getPhoneNumber(), "Please re-enter your *portal password*:");
+            sendMenu(ctx.getPhoneNumber(), "Please re-enter your *portal password*:",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
             ctx.setState(FsmState.SETUP_PASSWORD);
         }
     }
@@ -569,7 +600,20 @@ public class ConversationFsm {
             default -> null;
         };
         if (btype == null) {
-            sendMessage(ctx.getPhoneNumber(), "Please select a valid business type: Retail, Service, or Tech.");
+            sendMenu(ctx.getPhoneNumber(), "Please select a valid business type: Retail, Service, or Tech.",
+                List.of(
+                    List.of(
+                        TelegramChatAdapter.button("🛍️ Retail", "RETAIL"),
+                        TelegramChatAdapter.button("💼 Service", "SERVICE")
+                    ),
+                    List.of(
+                        TelegramChatAdapter.button("💻 Tech / Software", "TECH")
+                    ),
+                    List.of(
+                        TelegramChatAdapter.button("↩️ Back", "BACK"),
+                        TelegramChatAdapter.button("❌ Cancel", "CANCEL")
+                    )
+                ));
             return;
         }
         ctx.getExtras().put("btype", btype);
@@ -599,6 +643,10 @@ public class ConversationFsm {
             List.of(
                 TelegramChatAdapter.button("✅ Confirm & Create", "CONFIRM"),
                 TelegramChatAdapter.button("🔄 Start Over", "RESTART")
+            ),
+            List.of(
+                TelegramChatAdapter.button("↩️ Back", "BACK"),
+                TelegramChatAdapter.button("❌ Cancel", "CANCEL")
             )
         );
         sendMenu(ctx.getPhoneNumber(), summary, keyboard);
@@ -1074,37 +1122,60 @@ public class ConversationFsm {
     private void startTaskCreation(FsmContext ctx) {
         ctx.setPendingTask(new FsmContext.PendingTask());
         ctx.clearHistory();
-        sendMessage(ctx.getPhoneNumber(), "📋 *Create Task*\n\nWhat is the *task title*?");
+        sendMenu(ctx.getPhoneNumber(), "📋 *Create Task*\n\nWhat is the *task title*?",
+            List.of(List.of(TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
         ctx.setState(FsmState.TASK_TITLE);
     }
 
     private void handleTaskTitle(FsmContext ctx, String input) {
         if (input.length() < 3) {
-            sendMessage(ctx.getPhoneNumber(), "Please enter a task title (at least 3 characters).");
+            sendMenu(ctx.getPhoneNumber(), "Please enter a task title (at least 3 characters).",
+                List.of(List.of(TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
             return;
         }
         ctx.pushHistory();
         ctx.getPendingTask().setTitle(input);
-        sendMessage(ctx.getPhoneNumber(), "📝 Task *description* (or type *skip*):");
+        sendMenu(ctx.getPhoneNumber(), "📝 Task *description* (or type *skip*):",
+            List.of(
+                List.of(TelegramChatAdapter.button("⏭️ Skip", "skip")),
+                List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))
+            ));
         ctx.setState(FsmState.TASK_DESC);
     }
 
     private void handleTaskDesc(FsmContext ctx, String input) {
         ctx.pushHistory();
         if (!"skip".equalsIgnoreCase(input)) ctx.getPendingTask().setDescription(input);
-        sendMessage(ctx.getPhoneNumber(), "📅 *Due date*? (e.g. 2025-08-01 or *skip*):");
+        sendMenu(ctx.getPhoneNumber(), "📅 *Due date*? (e.g. 2025-08-01 or *skip*):",
+            List.of(
+                List.of(TelegramChatAdapter.button("⏭️ Skip", "skip")),
+                List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))
+            ));
         ctx.setState(FsmState.TASK_DUE);
     }
 
     private void handleTaskDue(FsmContext ctx, String input) {
         ctx.pushHistory();
         if (!"skip".equalsIgnoreCase(input)) {
+            String resolvedInput = input.trim().toLowerCase();
+            if (resolvedInput.equals("today")) {
+                resolvedInput = OffsetDateTime.now().toLocalDate().toString();
+            } else if (resolvedInput.equals("tomorrow")) {
+                resolvedInput = OffsetDateTime.now().plusDays(1).toLocalDate().toString();
+            } else if (resolvedInput.equals("next week") || resolvedInput.equals("week")) {
+                resolvedInput = OffsetDateTime.now().plusWeeks(1).toLocalDate().toString();
+            }
+
             try {
-                OffsetDateTime.parse(input + "T23:59:59Z");
-                ctx.getPendingTask().setDueDate(input + "T23:59:59Z");
+                OffsetDateTime.parse(resolvedInput + "T23:59:59Z");
+                ctx.getPendingTask().setDueDate(resolvedInput + "T23:59:59Z");
             } catch (DateTimeParseException e) {
-                sendMessage(ctx.getPhoneNumber(),
-                    "Invalid date. Use format YYYY-MM-DD (e.g. 2025-08-01) or type *skip*.");
+                sendMenu(ctx.getPhoneNumber(),
+                    "Invalid date. Use format YYYY-MM-DD (e.g. 2025-08-01), 'today', 'tomorrow', 'next week', or type *skip*.",
+                    List.of(
+                        List.of(TelegramChatAdapter.button("⏭️ Skip", "skip")),
+                        List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))
+                    ));
                 return;
             }
         }
@@ -1116,6 +1187,10 @@ public class ConversationFsm {
             List.of(
                 TelegramChatAdapter.button("High", "3"),
                 TelegramChatAdapter.button("Critical", "4")
+            ),
+            List.of(
+                TelegramChatAdapter.button("↩️ Back", "BACK"),
+                TelegramChatAdapter.button("❌ Cancel", "CANCEL")
             )
         );
         sendMenu(ctx.getPhoneNumber(), "🔥 Select Task *Priority*:", keyboard);
@@ -1127,13 +1202,31 @@ public class ConversationFsm {
                 "LOW","LOW","MEDIUM","MEDIUM","HIGH","HIGH","CRITICAL","CRITICAL");
         String priority = priorities.get(input.toUpperCase());
         if (priority == null) {
-            sendMessage(ctx.getPhoneNumber(), "Please reply 1, 2, 3, or 4.");
+            sendMenu(ctx.getPhoneNumber(), "Please reply 1, 2, 3, or 4.",
+                List.of(
+                    List.of(
+                        TelegramChatAdapter.button("Low", "1"),
+                        TelegramChatAdapter.button("Medium", "2")
+                    ),
+                    List.of(
+                        TelegramChatAdapter.button("High", "3"),
+                        TelegramChatAdapter.button("Critical", "4")
+                    ),
+                    List.of(
+                        TelegramChatAdapter.button("↩️ Back", "BACK"),
+                        TelegramChatAdapter.button("❌ Cancel", "CANCEL")
+                    )
+                ));
             return;
         }
         ctx.pushHistory();
         ctx.getPendingTask().setPriority(priority);
-        sendMessage(ctx.getPhoneNumber(),
-            "👤 Enter the *assignee's phone number* (or *skip* to leave unassigned):");
+        sendMenu(ctx.getPhoneNumber(),
+            "👤 Enter the *assignee's phone number* (or *skip* to leave unassigned):",
+            List.of(
+                List.of(TelegramChatAdapter.button("⏭️ Skip", "skip")),
+                List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))
+            ));
         ctx.setState(FsmState.TASK_ASSIGN);
     }
 
@@ -1258,15 +1351,17 @@ public class ConversationFsm {
 
     private void startInviteFlow(FsmContext ctx) {
         ctx.setPendingInvite(new FsmContext.PendingInvite());
-        sendMessage(ctx.getPhoneNumber(),
-            "👤 *Invite Employee*\n\nEnter their *phone number* (e.g. +15550001234):");
+        sendMenu(ctx.getPhoneNumber(),
+            "👤 *Invite Employee*\n\nEnter their *phone number* (e.g. +15550001234):",
+            List.of(List.of(TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
         ctx.setState(FsmState.INVITE_PHONE);
     }
 
     private void handleInvitePhone(FsmContext ctx, String input) {
         if (!input.startsWith("+") || input.length() < 8) {
-            sendMessage(ctx.getPhoneNumber(),
-                "Please enter a valid phone in E.164 format (e.g. +15550001234).");
+            sendMenu(ctx.getPhoneNumber(),
+                "Please enter a valid phone in E.164 format (e.g. +15550001234).",
+                List.of(List.of(TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
             return;
         }
         ctx.pushHistory();
@@ -1283,6 +1378,7 @@ public class ConversationFsm {
             if (row.size() == 2) { keyboard.add(row); row = new ArrayList<>(); }
         }
         if (!row.isEmpty()) keyboard.add(row);
+        keyboard.add(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL")));
 
         sendMenu(ctx.getPhoneNumber(), "🎭 *Select Role*:", keyboard);
         ctx.setState(FsmState.INVITE_ROLE);
@@ -1292,7 +1388,19 @@ public class ConversationFsm {
         String roleIdStr = ctx.getExtras().get("role_" + input);
         String roleName  = ctx.getExtras().get("roleName_" + input);
         if (roleIdStr == null) {
-            sendMessage(ctx.getPhoneNumber(), "Invalid selection. Please tap a role button.");
+            // Re-build roles keyboard to prompt again
+            List<Role> roles = roleRepository.findByBusinessId(ctx.getBusinessId());
+            List<List<Map<String, String>>> keyboard = new ArrayList<>();
+            List<Map<String, String>> row = new ArrayList<>();
+            for (int i = 0; i < roles.size(); i++) {
+                Role role = roles.get(i);
+                row.add(TelegramChatAdapter.button(role.getName(), String.valueOf(i + 1)));
+                if (row.size() == 2) { keyboard.add(row); row = new ArrayList<>(); }
+            }
+            if (!row.isEmpty()) keyboard.add(row);
+            keyboard.add(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL")));
+
+            sendMenu(ctx.getPhoneNumber(), "Invalid selection. Please tap a role button:", keyboard);
             return;
         }
         ctx.pushHistory();
@@ -1312,7 +1420,8 @@ public class ConversationFsm {
                 if (row.size() == 2) { keyboard.add(row); row = new ArrayList<>(); }
             }
             if (!row.isEmpty()) keyboard.add(row);
-            keyboard.add(List.of(TelegramChatAdapter.button("Skip", "skip")));
+            keyboard.add(List.of(TelegramChatAdapter.button("⏭️ Skip", "skip")));
+            keyboard.add(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL")));
             sendMenu(ctx.getPhoneNumber(), "🏢 *Select Department* (or skip):", keyboard);
             ctx.setState(FsmState.INVITE_DEPT);
         }
@@ -1325,6 +1434,20 @@ public class ConversationFsm {
             if (deptIdStr != null) {
                 ctx.getPendingInvite().setDepartmentId(UUID.fromString(deptIdStr));
                 ctx.getPendingInvite().setDepartmentName(deptName);
+            } else {
+                // Re-build department selection to prompt again
+                List<Department> depts = departmentRepository.findByBusinessId(ctx.getBusinessId());
+                List<List<Map<String, String>>> keyboard = new ArrayList<>();
+                List<Map<String, String>> row = new ArrayList<>();
+                for (int i = 0; i < depts.size(); i++) {
+                    row.add(TelegramChatAdapter.button(depts.get(i).getName(), String.valueOf(i + 1)));
+                    if (row.size() == 2) { keyboard.add(row); row = new ArrayList<>(); }
+                }
+                if (!row.isEmpty()) keyboard.add(row);
+                keyboard.add(List.of(TelegramChatAdapter.button("⏭️ Skip", "skip")));
+                keyboard.add(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL")));
+                sendMenu(ctx.getPhoneNumber(), "Invalid selection. Please tap a department button (or skip):", keyboard);
+                return;
             }
         }
         proceedToInviteConfirm(ctx);
@@ -1366,7 +1489,7 @@ public class ConversationFsm {
         );
 
         sendMessage(inv.getPhoneNumber(),
-            "🎉 *You've been invited to join a business portal on Blizbot!*\n\n" +
+            "🎉 *You've been invited to join a business portal on AgentCraft!*\n\n" +
             "Role: *" + inv.getRoleName() + "*\n\n" +
             "Type /start then enter this token to join:\n" +
             "*" + token.substring(0, Math.min(token.length(), 16)) + "...*\n" +
@@ -1634,7 +1757,7 @@ public class ConversationFsm {
         }
         if (target != null) {
             Task task = target.getTask();
-            taskService.updateStatus(task.getId(), ctx.getUserId(), "SUBMITTED", "Submitted via Blizbot");
+            taskService.updateStatus(task.getId(), ctx.getUserId(), "SUBMITTED", "Submitted via AgentCraft");
             sendMessage(ctx.getPhoneNumber(),
                 "✅ Task *" + task.getTitle() + "* submitted for manager approval.");
             notifyManagerOfSubmission(task.getCreatedBy(), task, target, ctx);
@@ -1729,6 +1852,237 @@ public class ConversationFsm {
             );
         } catch (Exception e) {
             sendMessage(ctx.getPhoneNumber(), "Could not retrieve stats. Please try again later.");
+        }
+    }
+
+    private void sendStatePrompt(FsmContext ctx) {
+        FsmState state = ctx.getState();
+        if (state == null) return;
+        switch (state) {
+            case NEW -> sendWelcome(ctx);
+            case SETUP_NAME -> sendMenu(ctx.getPhoneNumber(),
+                "👋 Hi! I'm *AgentCraft*, your personal assistant.\n\nLet's create your new portal.\n\n*Please enter your name.*",
+                List.of(List.of(TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case SETUP_USERNAME -> sendMenu(ctx.getPhoneNumber(),
+                "Please enter your *username*.\n\n_(← Back at any time)_",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case SETUP_BNAME -> sendMenu(ctx.getPhoneNumber(),
+                "Please enter your *company name*.",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case SETUP_BBUSINESS -> sendMenu(ctx.getPhoneNumber(),
+                "Please enter your *company business* (industry or sector, e.g. Retail, Tech, Services).",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case SETUP_BDESC -> sendMenu(ctx.getPhoneNumber(),
+                "Please enter a *company description*.",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case SETUP_EMP_COUNT -> sendMenu(ctx.getPhoneNumber(),
+                "Please enter your *number of employees* (e.g. 25).",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case SETUP_EMAIL -> sendMenu(ctx.getPhoneNumber(),
+                "Please enter your *email address*.",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case SETUP_DEPT_COUNT -> sendMenu(ctx.getPhoneNumber(),
+                "Please enter the *number of departments* in your company (e.g. 3).",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case SETUP_DEPT_NAMES -> {
+                int total     = Integer.parseInt(ctx.getExtras().getOrDefault("dept_count", "1"));
+                int collected = Integer.parseInt(ctx.getExtras().getOrDefault("dept_collected", "0"));
+                sendMenu(ctx.getPhoneNumber(),
+                    "Got it! Please enter the name of *Department " + (collected + 1) + "*:",
+                    List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            }
+            case SETUP_PASSWORD -> sendMenu(ctx.getPhoneNumber(),
+                "Please enter your *company portal password*.",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case SETUP_PASSWORD_CONFIRM -> {
+                List<List<Map<String, String>>> keyboard = List.of(
+                    List.of(
+                        TelegramChatAdapter.button("✅ Yes, it's correct", "YES"),
+                        TelegramChatAdapter.button("❌ No, re-enter", "NO")
+                    ),
+                    List.of(
+                        TelegramChatAdapter.button("↩️ Back", "BACK"),
+                        TelegramChatAdapter.button("❌ Cancel", "CANCEL")
+                    )
+                );
+                sendMenu(ctx.getPhoneNumber(),
+                    "🔐 Is the password you have entered correct?",
+                    keyboard);
+            }
+            case SETUP_BTYPE -> {
+                List<List<Map<String, String>>> keyboard = List.of(
+                    List.of(
+                        TelegramChatAdapter.button("🛍️ Retail", "RETAIL"),
+                        TelegramChatAdapter.button("💼 Service", "SERVICE")
+                    ),
+                    List.of(
+                        TelegramChatAdapter.button("💻 Tech / Software", "TECH")
+                    ),
+                    List.of(
+                        TelegramChatAdapter.button("↩️ Back", "BACK"),
+                        TelegramChatAdapter.button("❌ Cancel", "CANCEL")
+                    )
+                );
+                sendMenu(ctx.getPhoneNumber(),
+                    "🏭 Select your *Business Type*:\n\nThis determines which operational workflows your team will use.",
+                    keyboard);
+            }
+            case SETUP_CONFIRM -> {
+                String btype = ctx.getExtras().getOrDefault("btype", "RETAIL");
+                int deptCount = Integer.parseInt(ctx.getExtras().getOrDefault("dept_count", "0"));
+                StringBuilder deptList = new StringBuilder();
+                for (int i = 0; i < deptCount; i++) {
+                    deptList.append("\n  • ").append(ctx.getExtras().getOrDefault("dept_" + i, "?"));
+                }
+                String summary =
+                    "📋 *Confirm Portal Setup*\n\n" +
+                    "• *Name:* " + ctx.getExtras().getOrDefault("ceo_name", "-") + "\n" +
+                    "• *Username:* " + ctx.getExtras().getOrDefault("ceo_username", "-") + "\n" +
+                    "• *Company:* " + ctx.getExtras().getOrDefault("bname", "-") + "\n" +
+                    "• *Business:* " + ctx.getExtras().getOrDefault("bbusiness", "-") + "\n" +
+                    "• *Description:* " + ctx.getExtras().getOrDefault("bdesc", "-") + "\n" +
+                    "• *Employees:* " + ctx.getExtras().getOrDefault("emp_count", "-") + "\n" +
+                    "• *Email:* " + ctx.getExtras().getOrDefault("ceo_email", "-") + "\n" +
+                    "• *Departments:* " + deptCount + deptList + "\n" +
+                    "• *Business Type:* " + btype + "\n\n" +
+                    "Please confirm to create your portal:";
+                List<List<Map<String, String>>> keyboard = List.of(
+                    List.of(
+                        TelegramChatAdapter.button("✅ Confirm & Create", "CONFIRM"),
+                        TelegramChatAdapter.button("🔄 Start Over", "RESTART")
+                    ),
+                    List.of(
+                        TelegramChatAdapter.button("↩️ Back", "BACK"),
+                        TelegramChatAdapter.button("❌ Cancel", "CANCEL")
+                    )
+                );
+                sendMenu(ctx.getPhoneNumber(), summary, keyboard);
+            }
+            case LOGIN_USERNAME -> sendMenu(ctx.getPhoneNumber(),
+                "🔐 *Log In to an Existing Portal*\n\nPlease enter your *username*.",
+                List.of(List.of(TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case LOGIN_BNAME -> sendMenu(ctx.getPhoneNumber(),
+                "Please enter your *company name*.",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case LOGIN_EMAIL -> sendMenu(ctx.getPhoneNumber(),
+                "Please enter your *email address*.",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case LOGIN_PASSWORD -> sendMenu(ctx.getPhoneNumber(),
+                "Please enter your *portal password*.",
+                List.of(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case ACCEPT_INVITE_TOKEN -> sendMenu(ctx.getPhoneNumber(),
+                "🎟️ Please enter the *invite token* you received to join your business portal:",
+                List.of(List.of(TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case TASK_TITLE -> sendMenu(ctx.getPhoneNumber(),
+                "📋 *Create Task*\n\nWhat is the *task title*?",
+                List.of(List.of(TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case TASK_DESC -> sendMenu(ctx.getPhoneNumber(),
+                "📝 Task *description* (or type *skip*):",
+                List.of(
+                    List.of(TelegramChatAdapter.button("⏭️ Skip", "skip")),
+                    List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))
+                ));
+            case TASK_DUE -> sendMenu(ctx.getPhoneNumber(),
+                "📅 *Due date*? (e.g. 2025-08-01 or *skip*):",
+                List.of(
+                    List.of(TelegramChatAdapter.button("⏭️ Skip", "skip")),
+                    List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))
+                ));
+            case TASK_PRIORITY -> {
+                List<List<Map<String, String>>> keyboard = List.of(
+                    List.of(
+                        TelegramChatAdapter.button("Low", "1"),
+                        TelegramChatAdapter.button("Medium", "2")
+                    ),
+                    List.of(
+                        TelegramChatAdapter.button("High", "3"),
+                        TelegramChatAdapter.button("Critical", "4")
+                    ),
+                    List.of(
+                        TelegramChatAdapter.button("↩️ Back", "BACK"),
+                        TelegramChatAdapter.button("❌ Cancel", "CANCEL")
+                    )
+                );
+                sendMenu(ctx.getPhoneNumber(), "🔥 Select Task *Priority*:", keyboard);
+            }
+            case TASK_ASSIGN -> sendMenu(ctx.getPhoneNumber(),
+                "👤 Enter the *assignee's phone number* (or *skip* to leave unassigned):",
+                List.of(
+                    List.of(TelegramChatAdapter.button("⏭️ Skip", "skip")),
+                    List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL"))
+                ));
+            case TASK_CONFIRM -> {
+                FsmContext.PendingTask t = ctx.getPendingTask();
+                if (t != null) {
+                    String summary = String.format(
+                        "✅ *Confirm Task*\n\n• Title: %s\n• Desc: %s\n• Due: %s\n• Priority: %s\n• Assignee: %s",
+                        t.getTitle(),
+                        t.getDescription() != null ? t.getDescription() : "—",
+                        t.getDueDate() != null ? t.getDueDate().substring(0, 10) : "—",
+                        t.getPriority(),
+                        t.getAssigneePhone() != null ? t.getAssigneePhone() : "Unassigned"
+                    );
+                    List<List<Map<String, String>>> keyboard = List.of(
+                        List.of(
+                            TelegramChatAdapter.button("✅ Confirm", "1"),
+                            TelegramChatAdapter.button("✏️ Edit", "2"),
+                            TelegramChatAdapter.button("❌ Cancel", "3")
+                        )
+                    );
+                    sendMenu(ctx.getPhoneNumber(), summary, keyboard);
+                }
+            }
+            case INVITE_PHONE -> sendMenu(ctx.getPhoneNumber(),
+                "👤 *Invite Employee*\n\nEnter their *phone number* (e.g. +15550001234):",
+                List.of(List.of(TelegramChatAdapter.button("❌ Cancel", "CANCEL"))));
+            case INVITE_ROLE -> {
+                List<Role> roles = roleRepository.findByBusinessId(ctx.getBusinessId());
+                List<List<Map<String, String>>> keyboard = new ArrayList<>();
+                List<Map<String, String>> row = new ArrayList<>();
+                for (int i = 0; i < roles.size(); i++) {
+                    Role role = roles.get(i);
+                    ctx.getExtras().put("role_" + (i + 1), role.getId().toString());
+                    ctx.getExtras().put("roleName_" + (i + 1), role.getName());
+                    row.add(TelegramChatAdapter.button(role.getName(), String.valueOf(i + 1)));
+                    if (row.size() == 2) { keyboard.add(row); row = new ArrayList<>(); }
+                }
+                if (!row.isEmpty()) keyboard.add(row);
+                keyboard.add(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL")));
+                sendMenu(ctx.getPhoneNumber(), "🎭 *Select Role*:", keyboard);
+            }
+            case INVITE_DEPT -> {
+                List<Department> depts = departmentRepository.findByBusinessId(ctx.getBusinessId());
+                List<List<Map<String, String>>> keyboard = new ArrayList<>();
+                List<Map<String, String>> row = new ArrayList<>();
+                for (int i = 0; i < depts.size(); i++) {
+                    ctx.getExtras().put("dept_" + (i + 1), depts.get(i).getId().toString());
+                    ctx.getExtras().put("deptName_" + (i + 1), depts.get(i).getName());
+                    row.add(TelegramChatAdapter.button(depts.get(i).getName(), String.valueOf(i + 1)));
+                    if (row.size() == 2) { keyboard.add(row); row = new ArrayList<>(); }
+                }
+                if (!row.isEmpty()) keyboard.add(row);
+                keyboard.add(List.of(TelegramChatAdapter.button("⏭️ Skip", "skip")));
+                keyboard.add(List.of(TelegramChatAdapter.button("↩️ Back", "BACK"), TelegramChatAdapter.button("❌ Cancel", "CANCEL")));
+                sendMenu(ctx.getPhoneNumber(), "🏢 *Select Department* (or skip):", keyboard);
+            }
+            case INVITE_CONFIRM -> {
+                FsmContext.PendingInvite inv = ctx.getPendingInvite();
+                if (inv != null) {
+                    List<List<Map<String, String>>> keyboard = List.of(
+                        List.of(
+                            TelegramChatAdapter.button("📤 Send Invite", "1"),
+                            TelegramChatAdapter.button("❌ Cancel", "2")
+                        )
+                    );
+                    sendMenu(ctx.getPhoneNumber(),
+                        "📤 *Confirm Invite*\n\n" +
+                        "• Phone: " + inv.getPhoneNumber() + "\n" +
+                        "• Role: " + inv.getRoleName() + "\n" +
+                        (inv.getDepartmentName() != null ? "• Dept: " + inv.getDepartmentName() + "\n" : ""),
+                        keyboard);
+                }
+            }
+            case IDLE -> sendRoleMenu(ctx);
         }
     }
 
