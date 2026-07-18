@@ -6,6 +6,7 @@ import com.contextcraft.portal.service.*;
 import com.contextcraft.portal.telegram.TelegramChatAdapter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,6 +47,8 @@ public class ConversationFsm {
     private final TaskAssignmentRepository taskAssignmentRepository;
     private final AttachmentRepository attachmentRepository;
     private final RoleFlowRouter roleFlowRouter;
+    private final AiConversationHandler aiHandler;
+    private final PasswordEncoder passwordEncoder;
 
     public ConversationFsm(RedisConversationStore store,
                            TelegramChatAdapter telegramAdapter,
@@ -60,7 +63,9 @@ public class ConversationFsm {
                            TaskRepository taskRepository,
                            TaskAssignmentRepository taskAssignmentRepository,
                            AttachmentRepository attachmentRepository,
-                           RoleFlowRouter roleFlowRouter) {
+                           RoleFlowRouter roleFlowRouter,
+                           AiConversationHandler aiHandler,
+                           PasswordEncoder passwordEncoder) {
         this.store = store;
         this.telegramAdapter = telegramAdapter;
         this.businessService = businessService;
@@ -75,6 +80,8 @@ public class ConversationFsm {
         this.taskAssignmentRepository = taskAssignmentRepository;
         this.attachmentRepository = attachmentRepository;
         this.roleFlowRouter = roleFlowRouter;
+        this.aiHandler = aiHandler;
+        this.passwordEncoder = passwordEncoder;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -211,6 +218,13 @@ public class ConversationFsm {
                 case EMAIL_MGR_EDIT           -> handleEmailMgrEditState(ctx, input);
                 case EMAIL_MGR_ADDRESS        -> handleEmailMgrAddress(ctx, input);
 
+                // AI States — natural language conversation
+                case AI_ACTIVE           -> handleAiActive(ctx, input);
+                case AI_CLARIFYING       -> handleAiClarifying(ctx, input);
+
+                // Session ended — only respond to /start
+                case SESSION_ENDED       -> handleSessionEnded(ctx, input);
+
                 case ERROR                  -> handleError(ctx);
                 default -> {
                     log.warn("Unhandled state {} for {}", ctx.getState(), fromKey);
@@ -280,10 +294,26 @@ public class ConversationFsm {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Handles /start /menu /help /switch /cancel regardless of FSM state.
+     * Handles /start /menu /help /switch /cancel /exit /end regardless of FSM state.
      * Returns true if the command was consumed, false to let normal dispatch continue.
      */
     private boolean handleUniversalCommands(FsmContext ctx, String cmdUpper) {
+        // Handle EXIT/END before anything else — they override all states
+        if ("EXIT".equals(cmdUpper) || "END".equals(cmdUpper)) {
+            handleSessionTermination(ctx);
+            return true;
+        }
+
+        // If session is ended, only allow /start or /login to resume
+        if (ctx.getState() == FsmState.SESSION_ENDED) {
+            if ("START".equals(cmdUpper) || "LOGIN".equals(cmdUpper)) {
+                handleStart(ctx);
+                return true;
+            }
+            // Silently ignore all other messages in SESSION_ENDED state
+            return true;
+        }
+
         switch (cmdUpper) {
             case "START" -> {
                 // Re-trigger master flow
@@ -295,8 +325,8 @@ public class ConversationFsm {
                 ctx.clearHistory();
                 ctx.getExtras().clear();
                 if (ctx.getUserId() != null) {
-                    ctx.setState(FsmState.IDLE);
-                    sendRoleMenu(ctx);
+                    ctx.setState(FsmState.AI_ACTIVE);
+                    sendAiWelcome(ctx);
                 } else {
                     ctx.setState(FsmState.NEW);
                     sendWelcome(ctx);
@@ -319,9 +349,13 @@ public class ConversationFsm {
                 ctx.clearHistory();
                 ctx.getExtras().clear();
                 sendMessage(ctx.getPhoneNumber(), "❌ Cancelled. No changes were made.");
-                ctx.setState(ctx.getUserId() != null ? FsmState.IDLE : FsmState.NEW);
-                if (ctx.getUserId() != null) sendRoleMenu(ctx);
-                else sendWelcome(ctx);
+                if (ctx.getUserId() != null) {
+                    ctx.setState(FsmState.AI_ACTIVE);
+                    sendAiWelcome(ctx);
+                } else {
+                    ctx.setState(FsmState.NEW);
+                    sendWelcome(ctx);
+                }
                 return true;
             }
             case "BACK", "← BACK" -> {
@@ -339,6 +373,37 @@ public class ConversationFsm {
         }
     }
 
+    /**
+     * Terminates the session on /exit or /end command.
+     * Flushes Redis context, transitions to SESSION_ENDED, sends farewell.
+     */
+    private void handleSessionTermination(FsmContext ctx) {
+        log.info("Session terminated for {} via /exit or /end command", ctx.getPhoneNumber());
+        // Flush active session from Redis (keeps the minimal SESSION_ENDED skeleton)
+        ctx.setPendingTask(null);
+        ctx.setPendingInvite(null);
+        ctx.setPendingEmail(null);
+        ctx.clearHistory();
+        ctx.getExtras().clear();
+        ctx.setState(FsmState.SESSION_ENDED);
+
+        sendMessage(ctx.getPhoneNumber(),
+            "\uD83D\uDD12 *Session Ended.*\n\n" +
+            "Your AI Business Bot is now idle. " +
+            "Send /start at any time to resume your session.");
+    }
+
+    /**
+     * Handler for SESSION_ENDED state — should only be reached if a user somehow
+     * sends a non-command text while in SESSION_ENDED (the universal interceptor
+     * handles commands, so this is a fallback).
+     */
+    private void handleSessionEnded(FsmContext ctx, String input) {
+        sendMessage(ctx.getPhoneNumber(),
+            "\uD83D\uDD12 Your session has ended. Send /start to begin a new session.");
+    }
+
+
     // ═══════════════════════════════════════════════════════════════════════════
     // MASTER FLOW — /start
     // ═══════════════════════════════════════════════════════════════════════════
@@ -348,14 +413,15 @@ public class ConversationFsm {
         if (chatId != null) {
             Optional<TelegramUser> tgUser = telegramUserRepo.findByChatId(chatId);
             if (tgUser.isPresent() && "ACTIVE".equals(tgUser.get().getUser().getStatus())) {
-                // RETURNING USER — drop straight to their role menu
+                // RETURNING USER — drop straight into AI conversation mode
                 User user = tgUser.get().getUser();
                 ctx.setUserId(user.getId());
                 ctx.setBusinessId(user.getBusiness().getId());
-                ctx.setState(FsmState.IDLE);
+                ctx.setState(FsmState.AI_ACTIVE);
+                resolveAndSetRole(ctx, user);
                 sendMessage(ctx.getPhoneNumber(),
-                    "👋 Welcome back, *" + user.getDisplayName() + "*!");
-                sendRoleMenu(ctx);
+                    "\uD83D\uDC4B Welcome back, *" + user.getDisplayName() + "*!");
+                sendAiWelcome(ctx);
                 return;
             }
         }
@@ -373,8 +439,9 @@ public class ConversationFsm {
                 User user = tgUser.get().getUser();
                 ctx.setUserId(user.getId());
                 ctx.setBusinessId(user.getBusiness().getId());
-                ctx.setState(FsmState.IDLE);
-                sendRoleMenu(ctx);
+                ctx.setState(FsmState.AI_ACTIVE);
+                resolveAndSetRole(ctx, user);
+                sendAiWelcome(ctx);
                 return;
             }
         }
@@ -688,9 +755,9 @@ public class ConversationFsm {
         savedCeo.setDisplayName(ceoName);
         if (extras.get("ceo_email") != null) savedCeo.setEmail(extras.get("ceo_email"));
         if (extras.get("ceo_username") != null) savedCeo.setUsername(extras.get("ceo_username"));
-        // Persist portal password on the Business entity
+        // Persist portal password on the Business entity (using BCrypt hashing)
         if (extras.get("portal_password") != null) {
-            business.setPortalPassword(extras.get("portal_password"));
+            business.setPortalPassword(passwordEncoder.encode(extras.get("portal_password")));
         }
 
         businessService.setOwner(business.getId(), savedCeo.getId());
@@ -718,15 +785,15 @@ public class ConversationFsm {
         ctx.setUserRole("CEO");
         ctx.getExtras().clear();
         ctx.clearHistory();
-        ctx.setState(FsmState.IDLE);
+        ctx.setState(FsmState.AI_ACTIVE);
 
         sendMessage(ctx.getPhoneNumber(),
             "🎉 *Portal Created Successfully!*\n\n" +
             "• Business: *" + business.getName() + "*\n" +
             "• Your role: *CEO*\n" +
             "• Business type: *" + ctx.getBusinessType() + "*\n\n" +
-            "Please wait while we redirect you to your portal...");
-        sendRoleMenu(ctx);
+            "Your AI Business Assistant is now active! Just type naturally to manage your portal.");
+        sendAiWelcome(ctx);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -805,7 +872,7 @@ public class ConversationFsm {
             );
             ctx.setUserId(user.getId());
             ctx.setBusinessId(user.getBusiness().getId());
-            ctx.setState(FsmState.IDLE);
+            ctx.setState(FsmState.AI_ACTIVE);
             sendStatsToUser(ctx);
             triggerAnotherActionLoop(ctx);
         } catch (Exception e) {
@@ -820,10 +887,11 @@ public class ConversationFsm {
         ctx.setBusinessId(user.getBusiness().getId());
         ctx.getExtras().clear();
         ctx.clearHistory();
-        ctx.setState(FsmState.IDLE);
+        ctx.setState(FsmState.AI_ACTIVE);
         resolveAndSetRole(ctx, user);
-        sendMessage(ctx.getPhoneNumber(), "⏳ Please wait while we redirect you to your portal...");
-        sendRoleMenu(ctx);
+        sendMessage(ctx.getPhoneNumber(),
+            "\u23F3 Welcome back, *" + user.getDisplayName() + "*! Your AI portal is ready.");
+        sendAiWelcome(ctx);
     }
 
     private void resolveAndSetRole(FsmContext ctx, User user) {
@@ -920,7 +988,52 @@ public class ConversationFsm {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // MAIN MENU (IDLE) — Role-Based Dispatch
+    // AI NATURAL LANGUAGE CONVERSATION HANDLERS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Routes post-login free-form messages to the AI engine.
+     */
+    private void handleAiActive(FsmContext ctx, String input) {
+        if (ctx.getUserId() == null || ctx.getBusinessId() == null) {
+            // User somehow reached AI_ACTIVE without being logged in
+            sendMessage(ctx.getPhoneNumber(), "Please log in first. Type /start to begin.");
+            ctx.setState(FsmState.NEW);
+            return;
+        }
+        aiHandler.handle(ctx, input);
+    }
+
+    /**
+     * Handles the user's response to an AI clarifying doubt question.
+     */
+    private void handleAiClarifying(FsmContext ctx, String input) {
+        if (ctx.getUserId() == null || ctx.getBusinessId() == null) {
+            sendMessage(ctx.getPhoneNumber(), "Please log in first. Type /start to begin.");
+            ctx.setState(FsmState.NEW);
+            return;
+        }
+        aiHandler.handleClarification(ctx, input);
+    }
+
+    /**
+     * Sends the AI welcome/onboarding message after login.
+     */
+    private void sendAiWelcome(FsmContext ctx) {
+        sendMessage(ctx.getPhoneNumber(),
+            "\uD83E\uDD16 *AI Business Assistant Active*\n\n" +
+            "You can now manage your portal by chatting naturally. Try:\n\n" +
+            "\u2022 _\"Show all pending tasks\"_\n" +
+            "\u2022 _\"Create a task for Rahul by Friday\"_\n" +
+            "\u2022 _\"Approve the inventory task\"_\n" +
+            "\u2022 _\"Show analytics\"_\n" +
+            "\u2022 _\"List all employees\"_\n\n" +
+            "Type *help* for the full list of commands.\n" +
+            "Type /exit or /end to end your session.");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MAIN MENU (IDLE) — Role-Based Dispatch (kept for backward compat)
     // ═══════════════════════════════════════════════════════════════════════════
 
     private void handleIdle(FsmContext ctx, String input) {

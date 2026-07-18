@@ -87,6 +87,10 @@
 			<version>0.12.6</version>
 			<scope>runtime</scope>
 		</dependency>
+
+		<!-- Google Gemini AI (REST-based, no SDK dependency) -->
+		<!-- Uses Spring RestTemplate to call Gemini API directly -->
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-test</artifactId>

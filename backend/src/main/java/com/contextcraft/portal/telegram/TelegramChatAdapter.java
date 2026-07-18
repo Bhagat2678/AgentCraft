@@ -1,6 +1,7 @@
 package com.contextcraft.portal.telegram;
 
 import com.contextcraft.portal.config.TelegramProperties;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -70,6 +71,51 @@ public class TelegramChatAdapter {
             return false;
         }
         return sendText(chatId, text);
+    }
+
+    /**
+     * Fetches the current bot webhook registration details from Telegram.
+     */
+    public JsonNode getWebhookInfo() {
+        try {
+            ResponseEntity<String> response = sendRaw("getWebhookInfo", Collections.emptyMap());
+            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
+                log.warn("Failed to fetch webhook info: {}", response.getStatusCode());
+                return null;
+            }
+            return objectMapper.readTree(response.getBody());
+        } catch (Exception e) {
+            log.warn("Exception while fetching webhook info: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    public boolean registerWebhook(String webhookUrl, String secretToken) {
+        try {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("url", webhookUrl);
+            body.put("secret_token", secretToken);
+
+            ResponseEntity<String> response = sendRaw("setWebhook", body);
+            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
+                log.error("Telegram setWebhook failed: {}", response.getStatusCode());
+                return false;
+            }
+
+            JsonNode json = objectMapper.readTree(response.getBody());
+            boolean ok = json.path("ok").asBoolean(false);
+            if (!ok) {
+                log.error("Telegram setWebhook returned error: {}",
+                        json.path("description").asText("unknown error"));
+                return false;
+            }
+
+            log.info("Telegram webhook registered successfully at {}", webhookUrl);
+            return true;
+        } catch (Exception e) {
+            log.error("Failed to register Telegram webhook: {}", e.getMessage(), e);
+            return false;
+        }
     }
 
     // ─── Inline Keyboard ──────────────────────────────────────────────────────

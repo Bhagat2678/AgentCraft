@@ -9,6 +9,9 @@ package com.contextcraft.portal.fsm;
  *  - LOGIN_*           — portal login flow (existing users)
  *  - SELECT_BUSINESS   — /switch multi-business picker
  *  - IDLE              — main role menu dispatcher
+ *  - AI_ACTIVE         — free-form natural language AI conversation mode
+ *  - AI_CLARIFYING     — AI asked a doubt question; awaiting user's answer
+ *  - SESSION_ENDED     — session terminated via /exit or /end; awaits /start
  *  - TASK_*            — task creation sub-flow
  *  - INVITE_*          — employee invitation sub-flow
  *  - TASK_REVIEW_*     — manager approval sub-flow
@@ -54,6 +57,13 @@ public enum FsmState {
 
     // ── Main menu (active session) ─────────────────────────────────────────────
     IDLE,                       // Dispatches role commands
+
+    // ── AI Natural Language Conversation Mode ─────────────────────────────────
+    AI_ACTIVE,                  // Post-login: all messages routed to AI NLU engine
+    AI_CLARIFYING,              // AI asked a doubt question; merges answer with stored intent
+
+    // ── Session terminated ─────────────────────────────────────────────────────
+    SESSION_ENDED,              // Terminated via /exit or /end; ignores non-command messages
 
     // ── Universal end-of-action loop ──────────────────────────────────────────
     ANOTHER_ACTION,             // "Is there anything else you'd like to manage?" Yes / No

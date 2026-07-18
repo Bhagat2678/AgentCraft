@@ -37,3 +37,8 @@ docker/db_data/
 docker/redis_data/
 pgdata/
 redisdata/
+
+# Node / React
+Frontend/node_modules/
+Frontend/dist/
+

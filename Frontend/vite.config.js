@@ -9,7 +9,7 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       '/api': {
-        target: 'https://05dad236f26c7452-106-51-195-253.serveousercontent.com',
+        target: 'http://localhost:8080',
         changeOrigin: true,
         secure: false,
       }

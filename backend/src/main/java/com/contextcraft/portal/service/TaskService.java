@@ -6,7 +6,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
-import java.util.*;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalDouble;
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Service for task lifecycle: create, assign, status transitions, approval, and KPIs.
@@ -14,6 +22,11 @@ import java.util.*;
 @Service
 @Transactional
 public class TaskService {
+
+    private static final Set<String> VALID_PRIORITIES = Set.of("LOW", "MEDIUM", "HIGH", "CRITICAL");
+    private static final Set<String> VALID_STATUSES = Set.of(
+            "OPEN", "ASSIGNED", "IN_PROGRESS", "SUBMITTED", "APPROVED", "REJECTED", "CLOSED"
+    );
 
     private final TaskRepository taskRepository;
     private final TaskAssignmentRepository taskAssignmentRepository;
@@ -39,6 +52,16 @@ public class TaskService {
     public Task createTask(UUID businessId, UUID createdById, String title,
                            String description, OffsetDateTime dueDate,
                            String priority, UUID assigneeId) {
+        if (businessId == null) {
+            throw new IllegalArgumentException("Business id is required");
+        }
+        if (createdById == null) {
+            throw new IllegalArgumentException("Creator id is required");
+        }
+        if (title == null || title.isBlank()) {
+            throw new IllegalArgumentException("Task title is required");
+        }
+
         Business business = businessRepository.findById(businessId)
                 .orElseThrow(() -> new RuntimeException("Business not found"));
         User creator = userRepository.findById(createdById)
@@ -46,15 +69,15 @@ public class TaskService {
 
         Task task = new Task();
         task.setBusiness(business);
-        task.setTitle(title);
+        task.setTitle(title.trim());
         task.setDescription(description);
         task.setDueDate(dueDate);
-        task.setPriority(priority != null ? priority : "MEDIUM");
+        task.setPriority(normalizePriority(priority));
         task.setStatus(assigneeId != null ? "ASSIGNED" : "OPEN");
         task.setCreatedBy(creator);
         task = taskRepository.save(task);
 
-        recordHistory(task, createdById, "CREATED", null, Map.of("title", title, "status", task.getStatus()));
+        recordHistory(task, createdById, "CREATED", null, Map.of("title", title.trim(), "status", task.getStatus()));
 
         if (assigneeId != null) {
             User assignee = userRepository.findById(assigneeId)
@@ -78,16 +101,27 @@ public class TaskService {
      * Updates task status (e.g. employee submits proof, marks done).
      */
     public Task updateStatus(UUID taskId, UUID actorId, String newStatus, String note) {
+        if (taskId == null) {
+            throw new IllegalArgumentException("Task id is required");
+        }
+        if (actorId == null) {
+            throw new IllegalArgumentException("Actor id is required");
+        }
+        if (newStatus == null || newStatus.isBlank()) {
+            throw new IllegalArgumentException("Status is required");
+        }
+
         Task task = taskRepository.findById(taskId)
                 .orElseThrow(() -> new RuntimeException("Task not found: " + taskId));
 
+        String normalizedStatus = normalizeStatus(newStatus);
         String oldStatus = task.getStatus();
-        task.setStatus(newStatus);
+        task.setStatus(normalizedStatus);
         task = taskRepository.save(task);
 
-        recordHistory(task, actorId, newStatus,
+        recordHistory(task, actorId, normalizedStatus,
                 Map.of("status", oldStatus),
-                Map.of("status", newStatus, "note", note != null ? note : ""));
+                Map.of("status", normalizedStatus, "note", note != null ? note : ""));
 
         return task;
     }
@@ -167,9 +201,10 @@ public class TaskService {
     public List<TaskAssignment> listOpenAssignmentsByAssignee(UUID assigneeId) {
         return taskAssignmentRepository.findByAssigneeId(assigneeId).stream()
                 .filter(a -> a.getCompletedAt() == null &&
+                        a.getTask() != null &&
                         !"APPROVED".equals(a.getTask().getStatus()) &&
                         !"CLOSED".equals(a.getTask().getStatus()))
-                .collect(java.util.stream.Collectors.toList());
+                .collect(Collectors.toList());
     }
 
     @Transactional(readOnly = true)
@@ -179,8 +214,8 @@ public class TaskService {
                 .filter(t -> status == null || status.equalsIgnoreCase(t.getStatus()))
                 .filter(t -> priority == null || priority.equalsIgnoreCase(t.getPriority()))
                 .filter(t -> assigneeId == null || (t.getAssignments() != null && t.getAssignments().stream()
-                        .anyMatch(a -> a.getAssignee().getId().equals(assigneeId))))
-                .collect(java.util.stream.Collectors.toList());
+                        .anyMatch(a -> a.getAssignee() != null && a.getAssignee().getId() != null && a.getAssignee().getId().equals(assigneeId))))
+                .collect(Collectors.toList());
     }
 
     @Transactional(readOnly = true)
@@ -205,5 +240,27 @@ public class TaskService {
         h.setOldValue(oldVal);
         h.setNewValue(newVal);
         taskHistoryRepository.save(h);
+    }
+
+    private String normalizePriority(String priority) {
+        if (priority == null || priority.isBlank()) {
+            return "MEDIUM";
+        }
+        String normalized = priority.trim().toUpperCase(Locale.ROOT);
+        if (!VALID_PRIORITIES.contains(normalized)) {
+            throw new IllegalArgumentException("Priority must be LOW, MEDIUM, or HIGH");
+        }
+        return normalized;
+    }
+
+    private String normalizeStatus(String status) {
+        if (status == null || status.isBlank()) {
+            throw new IllegalArgumentException("Status is required");
+        }
+        String normalized = status.trim().toUpperCase(Locale.ROOT);
+        if (!VALID_STATUSES.contains(normalized)) {
+            throw new IllegalArgumentException("Status is not supported: " + status);
+        }
+        return normalized;
     }
 }
