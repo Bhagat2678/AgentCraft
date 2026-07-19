@@ -51,6 +51,7 @@ public class AiConversationHandler {
     private final UserRepository userRepository;
     private final DepartmentRepository departmentRepository;
     private final RoleRepository roleRepository;
+    private final BusinessRepository businessRepository;
     private final RedisConversationStore store;
     private final ObjectMapper objectMapper;
     private final GeminiIntentService geminiIntentService;
@@ -64,6 +65,7 @@ public class AiConversationHandler {
             UserRepository userRepository,
             DepartmentRepository departmentRepository,
             RoleRepository roleRepository,
+            BusinessRepository businessRepository,
             RedisConversationStore store,
             ObjectMapper objectMapper,
             GeminiIntentService geminiIntentService) {
@@ -75,6 +77,7 @@ public class AiConversationHandler {
         this.userRepository = userRepository;
         this.departmentRepository = departmentRepository;
         this.roleRepository = roleRepository;
+        this.businessRepository = businessRepository;
         this.store = store;
         this.objectMapper = objectMapper;
         this.geminiIntentService = geminiIntentService;
@@ -482,14 +485,19 @@ public class AiConversationHandler {
     private String executeCreateDepartment(ParsedIntent intent, UUID businessId) {
         try {
             String name = intent.entities.get("departmentName");
+            if (name == null || name.isBlank()) {
+                return "⚠️ Please provide a valid department name.";
+            }
+            Business business = businessRepository.findById(businessId)
+                    .orElseThrow(() -> new IllegalArgumentException("Business not found: " + businessId));
             Department dept = new Department();
-            dept.setName(name);
-            // Get business reference
-            dept = departmentRepository.save(dept);
+            dept.setName(name.trim());
+            dept.setBusiness(business);
+            departmentRepository.saveAndFlush(dept);
             return "✅ *Department Created\\!*\n\n🏢 *" + escapeMarkdown(name) + "* is now active in your portal.\n\nIs there anything else?";
         } catch (Exception e) {
             log.error("Create department failed", e);
-            return "⚠️ Failed to create department. Please try again.";
+            return "⚠️ Failed to create department: " + escapeMarkdown(e.getMessage());
         }
     }
 
