@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://e0d181156b57a36e-106-51-192-92.serveousercontent.com';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://squishy-linseed-prewashed.ngrok-free.dev';
 
 const iconMap = {
   AlertCircle, BarChart3, Bell, Bot, BookOpen, BriefcaseBusiness,
@@ -41,6 +41,7 @@ const navItems = [
 
 async function apiFetch(url, jwt, options = {}) {
   const headers = {
+    'ngrok-skip-browser-warning': 'true',
     ...(jwt ? { Authorization: `Bearer ${jwt}` } : {}),
     ...(options.headers || {}),
   };
@@ -141,7 +142,7 @@ function App() {
         setLoading(true);
         fetch(endpoint('/api/v1/auth/telegram'), {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
           body: JSON.stringify({ initData })
         })
         .then(r => r.ok ? r.json() : Promise.reject('Telegram auth failed'))
@@ -260,7 +261,7 @@ function App() {
     setLoading(true);
     fetch(endpoint('/api/v1/auth/login'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
       body: JSON.stringify({ email: emailInput.trim(), businessName: businessNameInput.trim(), password: passwordInput.trim() })
     })
     .then(r => r.ok ? r.json() : r.text().then(t => Promise.reject(t || 'Invalid credentials')))
@@ -276,7 +277,7 @@ function App() {
     setLoading(true);
     fetch(endpoint('/api/v1/auth/token'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
       body: JSON.stringify(body)
     })
     .then(r => r.ok ? r.json() : Promise.reject('Invalid credentials'))
