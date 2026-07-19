@@ -108,7 +108,19 @@ public class AiConversationHandler {
 
         // Extract intent using Gemini (or fallback to rule-based if Gemini not available)
         ParsedIntent intent = geminiIntentService.extractIntent(message, ctx.getBusinessId());
+
+        if ("UNKNOWN".equals(intent.intent)) {
+            intent = fallbackRuleBasedExtraction(message, ctx);
+        }
+
         log.info("Extracted intent: {} confidence={} missing={}", intent.intent, intent.confidence, intent.missingFields);
+
+        if ("UNKNOWN".equals(intent.intent)) {
+            String reply = executeIntent(intent, ctx);
+            send(ctx, reply);
+            ctx.setState(FsmState.AI_ACTIVE);
+            return;
+        }
 
         if (!intent.missingFields.isEmpty()) {
             // Store partial intent and ask clarifying question
@@ -134,6 +146,7 @@ public class AiConversationHandler {
             }
         }
     }
+
 
     /**
      * Handle clarification answer: merge with stored partial intent and retry.
@@ -750,6 +763,93 @@ public class AiConversationHandler {
         }
         return "";
     }
+
+    private ParsedIntent fallbackRuleBasedExtraction(String message, FsmContext ctx) {
+        String lower = message.toLowerCase().trim();
+        ParsedIntent intent = new ParsedIntent();
+
+        if (lower.contains("help") || lower.equals("hi") || lower.equals("hello") || lower.equals("start")) {
+            intent.intent = "SHOW_HELP";
+            intent.confidence = 0.9;
+            return intent;
+        }
+
+        if (lower.contains("analytic") || lower.contains("stat") || lower.contains("report") || lower.contains("performance")) {
+            intent.intent = "SHOW_ANALYTICS";
+            intent.confidence = 0.9;
+            return intent;
+        }
+
+        if (lower.contains("list task") || lower.contains("show task") || lower.contains("view task") || lower.contains("my task") || lower.equals("tasks")) {
+            intent.intent = "LIST_TASKS";
+            intent.confidence = 0.9;
+            return intent;
+        }
+
+        if (lower.contains("list user") || lower.contains("show user") || lower.contains("list employee") || lower.contains("show employee") || (lower.contains("team member") && (lower.contains("show") || lower.contains("list") || lower.contains("view")))) {
+            intent.intent = "LIST_USERS";
+            intent.confidence = 0.9;
+            return intent;
+        }
+
+        if (lower.contains("list department") || lower.contains("show department")) {
+            intent.intent = "LIST_DEPARTMENTS";
+            intent.confidence = 0.9;
+            return intent;
+        }
+
+        if (lower.contains("create task") || lower.contains("assign task") || lower.contains("new task") || (lower.contains("task") && (lower.contains("create") || lower.contains("add") || lower.contains("assign")))) {
+            intent.intent = "CREATE_TASK";
+            intent.confidence = 0.8;
+            String title = extractTaskTitle(message);
+            String assignee = extractAssigneeName(lower);
+            String date = extractDate(lower);
+            String priority = extractPriority(lower);
+            if (!title.isBlank()) intent.entities.put("taskTitle", title);
+            if (assignee != null) intent.entities.put("assigneeName", assignee);
+            if (date != null) intent.entities.put("dueDate", date);
+            if (priority != null) intent.entities.put("priority", priority);
+
+            if (title.isBlank()) intent.missingFields.add("taskTitle");
+            return intent;
+        }
+
+        if (lower.contains("add") || lower.contains("invite") || lower.contains("onboard") || lower.contains("team member") || lower.contains("employee")) {
+            intent.intent = "INVITE_USER";
+            intent.confidence = 0.8;
+            String person = extractPersonName(lower);
+            String role = extractRole(lower);
+            if (person != null) intent.entities.put("employeeName", person);
+            if (role != null) intent.entities.put("roleName", role);
+
+            if (person == null) intent.missingFields.add("employeeName");
+            if (role == null) intent.missingFields.add("roleName");
+            return intent;
+        }
+
+        if (lower.contains("department")) {
+            intent.intent = "CREATE_DEPARTMENT";
+            intent.confidence = 0.8;
+            String dept = extractDepartmentName(message);
+            if (!dept.isBlank()) intent.entities.put("departmentName", dept);
+            else intent.missingFields.add("departmentName");
+            return intent;
+        }
+
+        if (lower.contains("approve") || lower.contains("reject") || lower.contains("review")) {
+            intent.intent = "REVIEW_TASK";
+            intent.confidence = 0.8;
+            intent.entities.put("decision", lower.contains("reject") ? "REJECT" : "APPROVE");
+            String title = extractTaskTitle(message);
+            if (!title.isBlank()) intent.entities.put("taskTitle", title);
+            return intent;
+        }
+
+        intent.intent = "UNKNOWN";
+        intent.confidence = 0.2;
+        return intent;
+    }
+
 
     // ═══════════════════════════════════════════════════════════════════════════
     // UTILITY HELPERS

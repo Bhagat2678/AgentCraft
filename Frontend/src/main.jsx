@@ -139,7 +139,7 @@ function App() {
       const initData = webapp.initData;
       if (initData) {
         setLoading(true);
-        fetch('/api/v1/auth/telegram', {
+        fetch(endpoint('/api/v1/auth/telegram'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ initData })
@@ -258,7 +258,7 @@ function App() {
       showToast('All fields are required.', 'error'); return;
     }
     setLoading(true);
-    fetch('/api/v1/auth/login', {
+    fetch(endpoint('/api/v1/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: emailInput.trim(), businessName: businessNameInput.trim(), password: passwordInput.trim() })
@@ -274,7 +274,7 @@ function App() {
     const body = phoneInput.trim() ? { phoneNumber: phoneInput.trim() } : { token: inviteTokenInput.trim() };
     if (!body.phoneNumber && !body.token) { showToast('Enter phone number or invite token.', 'error'); return; }
     setLoading(true);
-    fetch('/api/v1/auth/token', {
+    fetch(endpoint('/api/v1/auth/token'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
