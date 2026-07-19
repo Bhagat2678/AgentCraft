@@ -41,4 +41,7 @@ redisdata/
 # Node / React
 Frontend/node_modules/
 Frontend/dist/
+Frontend_bundle.js
+test_images/
+test_login.*
 

@@ -139,20 +139,17 @@ npm run dev
 ```
 *The frontend dashboard will be available at `http://localhost:5173`.*
 
-### 5. Establish Reverse Tunneling (Serveo / Ngrok)
-To allow Telegram webhook calls and local React TMA resource delivery, expose your local ports to the internet:
+### 5. Establish Reverse Tunneling (Ngrok)
+To allow Telegram webhook calls and local backend resource delivery, expose your local Spring Boot backend (Port 8080) to the internet using **Ngrok**:
 ```bash
 # Expose Backend (Port 8080)
-ssh -o StrictHostKeyChecking=no -R 80:127.0.0.1:8080 serveo.net
-
-# Expose Frontend (Port 5173)
-ssh -o StrictHostKeyChecking=no -R 80:127.0.0.1:5173 serveo.net
+ngrok http 8080 --url https://squishy-linseed-prewashed.ngrok-free.dev
 ```
 
 ### 6. Register Telegram Bot Webhook
-Register the public endpoint with Telegram API using your new **Backend Tunnel URL**:
+Register the public endpoint with Telegram API using your **Backend Ngrok URL**:
 ```powershell
-Invoke-RestMethod -Uri "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://<YOUR_BACKEND_TUNNEL_URL>/api/v1/telegram/webhook&secret_token=<YOUR_SECRET>"
+Invoke-RestMethod -Uri "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://squishy-linseed-prewashed.ngrok-free.dev/api/v1/telegram/webhook&secret_token=<YOUR_SECRET>"
 ```
 
 Verify the current configuration at any time:
