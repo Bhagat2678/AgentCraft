@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://cb8281ff27ed0166-106-51-192-92.serveousercontent.com';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://e0d181156b57a36e-106-51-192-92.serveousercontent.com';
 
 const iconMap = {
   AlertCircle, BarChart3, Bell, Bot, BookOpen, BriefcaseBusiness,
