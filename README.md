@@ -109,13 +109,17 @@ docker-compose up -d
 ### 2. Configure Local Environment Variables
 Create a `.env` file in the root directory based on `.env.example`:
 ```ini
-SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5433/contextcraft
-SPRING_DATASOURCE_USERNAME=admin
-SPRING_DATASOURCE_PASSWORD=password
+DB_HOST=localhost
+DB_PORT=5433
+DB_NAME=contextcraft
+DB_USER=admin
+DB_PASSWORD=password
 
-TELEGRAM_BOT_TOKEN=8841120098:AAFqvWqxNTRQPQ8J2jp4pZECAs0288YWxNk
-TELEGRAM_WEBHOOK_SECRET=c2c77d61b365ff349a60e0a54e9bc36d
-TELEGRAM_PUBLIC_WEBHOOK_URL=https://squishy-linseed-prewashed.ngrok-free.dev/api/v1/telegram/webhook
+JWT_SECRET=Y2hhbmdlbWVjaGFuZ2VtZWNoYW5nZW1lY2hhbmdlbWVjaGFuZ2VtZWNoYW5nZW0=
+
+TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
+TELEGRAM_WEBHOOK_SECRET=YOUR_WEBHOOK_SECRET
+TELEGRAM_PUBLIC_WEBHOOK_URL=https://<your-ngrok-domain>.ngrok-free.dev/api/v1/telegram/webhook
 
 GEMINI_API_KEY=YOUR_GEMINI_API_KEY
 ```
@@ -138,7 +142,7 @@ npm run dev
 ### 5. Reverse Tunneling (Ngrok)
 Expose the backend port to receive Telegram webhooks:
 ```bash
-ngrok http 8080 --url https://squishy-linseed-prewashed.ngrok-free.dev
+ngrok http 8080
 ```
 
 ---
