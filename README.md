@@ -11,17 +11,6 @@
 
 ---
 
-## 🏆 Hackathon Evaluation Criteria Alignment
-
-| Criteria | Weight | How AgentCraft Delivers |
-| :--- | :---: | :--- |
-| **🤖 Model Innovation & Novelty** | **30%** | **Hybrid AI + FSM Architecture**: Integrates **Google Gemini 2.0 Flash** for zero-shot intent extraction & natural language entity resolution combined with a strict, transactional **Finite State Machine (FSM)** for stateful business onboarding and task delegation. |
-| **🌍 Real-World Applicability** | **25%** | **Zero-Friction Operations**: Eliminates steep learning curves for non-technical teams by bringing enterprise management (KPIs, tasks, employee roles, department routing) directly into Telegram chat & Telegram Mini Apps (TMA). |
-| **🏗️ Technical Architecture** | **25%** | **Production Stack**: Built with Spring Boot 3.4, Java 17, PostgreSQL 15, Redis session storage, Quartz Scheduler, Flyway schema migrations, and React 18 SPA with strict CORS/JWT security. |
-| **📑 Documentation Clarity** | **20%** | Comprehensive architectural diagrams, clean repository hierarchy, live public endpoints, and reproducible local startup workflows. |
-
----
-
 - **🤖 Telegram Assistant Bot**: [@Agentcraft_B_Bot](https://t.me/Agentcraft_B_Bot)
 - **🐳 Cloud & Container Ready**: Includes root `docker-compose.yml` and `backend/Dockerfile` for 1-click cloud hosting (Render, Railway, AWS, DigitalOcean).
 
