@@ -1,12 +1,32 @@
 # 🛠️ AgentCraft
-### *100% Telegram-Native Business Operations & Portal Management Platform*
+### *100% Telegram-Native AI Business Operations & Management Platform*
 
-[![Build Status](https://img.shields.io/badge/Build-Success-16a34a?style=for-the-badge&logo=github)](https://github.com)
+[![Build Status](https://img.shields.io/badge/Build-Success-16a34a?style=for-the-badge&logo=github)](https://github.com/Bhagat2678/AgentCraft)
 [![Platform](https://img.shields.io/badge/Platform-Telegram_Bot_&_TMA-0088cc?style=for-the-badge&logo=telegram)](https://telegram.org)
-[![Backend](https://img.shields.io/badge/Backend-Spring_Boot_3.3-6db33f?style=for-the-badge&logo=springboot)](https://spring.io)
+[![AI Engine](https://img.shields.io/badge/AI_Engine-Gemini_2.0_Flash-4285f4?style=for-the-badge&logo=google)](https://ai.google.dev)
+[![Backend](https://img.shields.io/badge/Backend-Spring_Boot_3.4-6db33f?style=for-the-badge&logo=springboot)](https://spring.io)
 [![Frontend](https://img.shields.io/badge/Frontend-React_18_&_Vite-61dafb?style=for-the-badge&logo=react)](https://react.dev)
 
-**AgentCraft** (powered by **FlowZint**) is an automated business management portal and task management engine built **100% natively on Telegram** (Conversational Bots and Telegram Mini Apps). It enables small-to-medium enterprises (Retail, Service, Tech) to run complex business flows directly within Telegram using standard conversational adapters and real-time dashboard visualization.
+**AgentCraft** (by **FlowZint**) is a next-generation AI business portal and operational task engine built **100% natively on Telegram** (Conversational AI Bots & Telegram Mini Apps). It enables small-to-medium enterprises (Retail, Service, Tech) to run complex business flows, create departments, delegate tasks, and monitor real-time KPIs directly inside Telegram using natural language AI or an interactive web dashboard.
+
+---
+
+## 🏆 Hackathon Evaluation Criteria Alignment
+
+| Criteria | Weight | How AgentCraft Delivers |
+| :--- | :---: | :--- |
+| **🤖 Model Innovation & Novelty** | **30%** | **Hybrid AI + FSM Architecture**: Integrates **Google Gemini 2.0 Flash** for zero-shot intent extraction & natural language entity resolution combined with a strict, transactional **Finite State Machine (FSM)** for stateful business onboarding and task delegation. |
+| **🌍 Real-World Applicability** | **25%** | **Zero-Friction Operations**: Eliminates steep learning curves for non-technical teams by bringing enterprise management (KPIs, tasks, employee roles, department routing) directly into Telegram chat & Telegram Mini Apps (TMA). |
+| **🏗️ Technical Architecture** | **25%** | **Production Stack**: Built with Spring Boot 3.4, Java 17, PostgreSQL 15, Redis session storage, Quartz Scheduler, Flyway schema migrations, and React 18 SPA with strict CORS/JWT security. |
+| **📑 Documentation Clarity** | **20%** | Comprehensive architectural diagrams, clean repository hierarchy, live public endpoints, and reproducible local startup workflows. |
+
+---
+
+## 🔗 Live Application & Bot Links
+
+- **🤖 Telegram Assistant Bot**: [@Agentcraft_B_Bot](https://t.me/Agentcraft_B_Bot)
+- **📱 Telegram Mini App (Web Dashboard)**: [agent-craft-rust.vercel.app](https://agent-craft-rust.vercel.app/)
+- **⚡ Backend API Endpoint**: `https://squishy-linseed-prewashed.ngrok-free.dev`
 
 ---
 
@@ -15,9 +35,9 @@
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │                                   TELEGRAM CLIENT                                      │
-│              Telegram Bot Chat Interface   │   Telegram Mini App (React Dashboard)    │
+│         Telegram Bot Chat (@Agentcraft_B_Bot)   │   Telegram Mini App (React TMA)      │
 └─────────────────────────────────────┬──────────────────┬───────────────────────────────┘
-                                      │ Webhook          │ REST (Bearer JWT)
+                                      │ Webhook          │ REST (Bearer JWT / CORS)
                                       ▼                  ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │                                 SPRING BOOT BACKEND                                    │
@@ -32,7 +52,7 @@
 │   │                    Conversation FSM Engine & RoleFlowRouter                    │   │
 │   │   - Step History Stack (← Back)    - Role Tracks (CEO/Manager/Lead/Employee)   │   │
 │   │   - Dynamic Inline Keyboards       - Multi-Business Context Switching (/switch)│   │
-│   │   - End-of-Action Exit Loop        - Email & Proof Attachment Handlers         │   │
+│   │   - End-of-Action Exit Loop        - Gemini NLU Intent & Entity Resolver       │   │
 │   └────────────────────────────────────────┬───────────────────────────────────────┘   │
 └────────────────────────────────────────────┼───────────────────────────────────────────┘
                                              │
@@ -50,22 +70,22 @@
 
 ## 🌟 Key Functional Tracks
 
-### 🤖 1. Conversational FSM Engine
-- **Universal Flow Navigation**: Support for `/start`, `/menu`, `/switch`, `/help`, `/cancel`, and stateful `← Back` buttons to traverse setup wizards without losing inputs.
-- **Multi-Portal Support**: Allows business owners or employees to switch operational business contexts on-the-fly (`/switch`).
-- **Nudge Schedules**: Background Quartz jobs inspect Redis for idle multi-step session states and send automated reminder warnings every 30 minutes.
+### 🤖 1. Hybrid AI + FSM Conversational Engine
+- **Gemini 2.0 Flash NLU**: Parses natural text like *"Create an urgent task for Rahul to update inventory by Friday"* into structured intent & entity payloads.
+- **Transactional State Machine**: Ensures database integrity and business relationship constraints (e.g., automatically binding newly created departments to parent businesses).
+- **Universal Navigation**: Full support for `/start`, `/menu`, `/switch`, `/help`, `/cancel`, and stateful `← Back` buttons.
+- **Nudge Schedules**: Background Quartz jobs inspect idle sessions in Redis and send automated reminder warnings.
 
-### 🎭 2. Enterprise Domain Tracks (CEO / Manager / Lead / Employee)
+### 🎭 2. Enterprise Domain Support
 - **🛒 Retail**: Sales summaries, restock requests, invoice matching, batch packaging, and courier dispatch logs.
 - **💼 Service**: Client rosters, project allocations, QA review processes, and revision loops.
 - **💻 Tech / Dev**: Sprint planning, feature triaging, PR submission references, and release validation checklists.
 
 ### 📱 3. React Portal Dashboard (Telegram Mini App)
-- **Stat Cards & KPIs**: Real-time analytical snapshots of business health, completion ratios, active staff, and department scoring.
-- **Task Workspace**: Filter, search, create, delegate, reassign, approve, or reject tasks. Timeline timeline history views display detailed change histories.
-- **Team Directory**: Invite new workers via telephone invitations, assign roles dynamically on each user, or suspend/activate access.
+- **KPI Metrics & Stat Cards**: Analytical snapshots of business health, task completion ratios, staff counts, and department performance.
+- **Task Workspace**: Filter, search, create, delegate, reassign, approve, or reject tasks with complete audit logs.
+- **Team Directory**: Invite staff via telephone numbers, assign granular roles (CEO, Manager, Lead, Employee), or toggle access status.
 - **Depts & Roles Manager**: Custom role generation interface enabling direct permission checkbox configurations.
-- **Profile & Bot Control**: Dedicated settings panel showing copyable Telegram bot handles, webhook active indicators, connection urls, and manual sync commands.
 
 ---
 
@@ -73,107 +93,72 @@
 
 ```
 AgentCraft/
-├── backend/                    # Spring Boot 3.3 Application
-│   ├── src/main/java/          # Java Sources (fsm, entity, controller, service, security)
-│   ├── src/main/resources/     # Schema migrations (Flyway V1..V7) & app properties
-│   └── pom.xml                 # Maven dependency descriptor
-├── Frontend/                   # React Vite SPA Dashboard
-│   ├── src/                    # Components, Screens, Styles & main.jsx Portal
-│   ├── vite.config.js          # Build & Reverse Proxy mappings
-│   └── package.json            # Node JS packages
-├── docs/                       # Specifications & Developer Guides
-│   ├── PHASE_2_FRONTEND_WIRING.md
-│   ├── PHASE_3_BACKEND_AUDIT.md
-│   ├── ai_chatbot_flow_prompt.md
-│   ├── correction_prompt.md
-│   ├── TELEGRAM_README.md
-│   └── RUN_SERVERS.md
-├── .env.example                # Config template file
-├── docker-compose.yml          # Container stack orchestration (Db, Redis)
-├── run_backend.bat             # Quick startup script (backend)
-└── run_frontend.bat            # Quick startup script (frontend)
+├── backend/                    # Spring Boot 3.4 Application
+│   ├── src/main/java/          # Controllers, Services, Entities, Security & FSM Engine
+│   ├── src/main/resources/     # Flyway Migrations (V1..V7) & app properties
+│   └── pom.xml                 # Maven configuration
+├── Frontend/                   # React 18 + Vite Telegram Mini App
+│   ├── src/                    # UI Components, Screens, Design Tokens & main.jsx
+│   ├── vite.config.js          # Build configuration & dev proxy
+│   └── package.json            # Node.js dependencies
+├── docs/                       # Architectural specifications & guides
+├── .env.example                # Environment variable configuration template
+├── docker-compose.yml          # Container stack (Postgres 15 + Redis)
+├── run_backend.bat             # One-click backend startup script
+└── run_frontend.bat            # One-click frontend startup script
 ```
 
 ---
 
 ## 🚀 Setup & Execution Guide
 
-### 1. Start Services Stack (Database & Redis)
-Ensure Docker is active, then initialize PostgreSQL 15 and Redis:
+### 1. Start Database & Redis Stack
+Ensure Docker Desktop is running, then launch PostgreSQL and Redis:
 ```bash
 docker-compose up -d
 ```
-*   **Postgres Interface:** `localhost:5433`
-*   **Redis Interface:** `localhost:6379`
+- **Postgres Interface:** `localhost:5433` (Database: `contextcraft`)
+- **Redis Interface:** `localhost:6379`
 
 ### 2. Configure Local Environment Variables
-Create a file named `.env` in the root folder using `.env.example` as a template:
+Create a `.env` file in the root directory based on `.env.example`:
 ```ini
 SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5433/contextcraft
 SPRING_DATASOURCE_USERNAME=admin
 SPRING_DATASOURCE_PASSWORD=password
 
-TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN_FROM_BOTFATHER
-TELEGRAM_WEBHOOK_SECRET=YOUR_SECURE_SECRET_TOKEN
+TELEGRAM_BOT_TOKEN=8841120098:AAFqvWqxNTRQPQ8J2jp4pZECAs0288YWxNk
+TELEGRAM_WEBHOOK_SECRET=c2c77d61b365ff349a60e0a54e9bc36d
+TELEGRAM_PUBLIC_WEBHOOK_URL=https://squishy-linseed-prewashed.ngrok-free.dev/api/v1/telegram/webhook
+
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY
 ```
 
 ### 3. Launch Spring Boot Backend
-Configure environment variables and start the server:
 ```powershell
-# Set Environment Variables
-$env:TELEGRAM_BOT_TOKEN="YOUR_BOT_TOKEN"
-$env:TELEGRAM_WEBHOOK_SECRET="YOUR_SECRET"
-
-# Start Server
 cd backend
 .\mvnw.cmd spring-boot:run
 ```
-*The REST API will host locally at `http://localhost:8080`.*
+*Backend API runs locally at `http://localhost:8080`.*
 
 ### 4. Launch React Frontend
-Navigate to the Frontend directory, install dependencies, and run the development bundle:
 ```bash
 cd Frontend
 npm install
 npm run dev
 ```
-*The frontend dashboard will be available at `http://localhost:5173`.*
+*Frontend runs locally at `http://localhost:5173`.*
 
-### 5. Establish Reverse Tunneling (Ngrok)
-To allow Telegram webhook calls and local backend resource delivery, expose your local Spring Boot backend (Port 8080) to the internet using **Ngrok**:
+### 5. Reverse Tunneling (Ngrok)
+Expose the backend port to receive Telegram webhooks:
 ```bash
-# Expose Backend (Port 8080)
 ngrok http 8080 --url https://squishy-linseed-prewashed.ngrok-free.dev
-```
-
-### 6. Register Telegram Bot Webhook
-Register the public endpoint with Telegram API using your **Backend Ngrok URL**:
-```powershell
-Invoke-RestMethod -Uri "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://squishy-linseed-prewashed.ngrok-free.dev/api/v1/telegram/webhook&secret_token=<YOUR_SECRET>"
-```
-
-Verify the current configuration at any time:
-```powershell
-Invoke-RestMethod "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getWebhookInfo"
 ```
 
 ---
 
 ## 🔒 Security Hardening
 
-- **Stateless Authentication**: Frontend requests authenticate via Bearer JWTs generated securely using HMAC-SHA256 signatures.
-- **HMAC validation**: Launcher verification (`initData`) ensures safe requests right from Telegram Mini Apps.
-- **BCrypt Encryption**: Portal login credentials set during FSM onboarding are encrypted with BCrypt hashing before database persistence.
-
----
-
-## 🛠️ Validation Mappings
-To ensure stability, you can execute standard maven testing and compilation validation checks:
-```bash
-# Run Maven Compilation
-cd backend
-.\mvnw.cmd compile
-
-# Run Suite Unit Testing
-.\mvnw.cmd test
-```
+- **HMAC SHA-256 WebApp Validation**: Verifies Telegram `initData` signatures before issuing JWT tokens.
+- **JWT Authentication**: Full Bearer token security with CORS preflight support (`Access-Control-Allow-Headers`).
+- **BCrypt Encryption**: Passwords created during conversational onboarding are encrypted using strong BCrypt hashing.
