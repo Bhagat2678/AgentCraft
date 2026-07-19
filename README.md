@@ -22,12 +22,8 @@
 
 ---
 
-## 🔗 Live Application & Bot Links
-
 - **🤖 Telegram Assistant Bot**: [@Agentcraft_B_Bot](https://t.me/Agentcraft_B_Bot)
-- **📱 Telegram Mini App (Web Dashboard)**: [agent-craft-rust.vercel.app](https://agent-craft-rust.vercel.app/)
-- **⚡ Backend API Endpoint**: `https://squishy-linseed-prewashed.ngrok-free.dev` *(Active Ngrok Tunnel during Live Evaluation)*
-- **🐳 Cloud Deployment Ready**: Production `Dockerfile` included for 1-click deployment on Render / Railway / AWS.
+- **🐳 Cloud & Container Ready**: Includes root `docker-compose.yml` and `backend/Dockerfile` for 1-click cloud hosting (Render, Railway, AWS, DigitalOcean).
 
 ---
 
